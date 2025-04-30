@@ -1,0 +1,875 @@
+I'll design and implement the most high-leverage feature for Claimr to transform it into an AI-driven operations assistant for AV teams. After analyzing the options, I'll focus on the **Org-Scoped Learning Vaults** as it offers the strongest combination of short and long-term value.
+
+# Org-Scoped Learning Vaults: Implementation
+
+This feature creates private memory banks per integrator (like CTI, AVI-SPL), evolves agent behavior based on firm-level history, and enables personalization and training per organization.
+
+## Why This Feature?
+
+The Org-Scoped Learning Vaults provide immediate value by personalizing the Claimr experience for each AV integrator while building toward long-term adoption. It creates a powerful network effect where the platform becomes more valuable as organizations use it more, addressing the goal of becoming their daily tool and "agent" that helps techs do more with less.
+
+## 1. Supabase Schema Implementation
+
+Let's start with the necessary database schema:
+
+```sql
+-- Organization table to store basic org info
+CREATE TABLE IF NOT EXISTS public.organizations (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  settings JSONB DEFAULT '{}'::jsonb,
+  active BOOLEAN DEFAULT true
+);
+
+-- Organization vault table to store learning data
+CREATE TABLE IF NOT EXISTS public.org_vaults (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+  vault_type TEXT NOT NULL, -- 'claim_patterns', 'vendor_insights', 'tech_behaviors', 'equipment_trends'
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  version INTEGER DEFAULT 1,
+  
+  UNIQUE(org_id, vault_type)
+);
+
+-- Organization vault logs to track changes and training
+CREATE TABLE IF NOT EXISTS public.org_vault_logs (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+  vault_id UUID NOT NULL REFERENCES public.org_vaults(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL, -- 'training', 'update', 'retrieval', 'inference'
+  data JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  created_by UUID, -- user reference
+  metrics JSONB DEFAULT '{}'::jsonb -- for tracking performance
+);
+
+-- Organization-specific behaviors and rules
+CREATE TABLE IF NOT EXISTS public.org_behaviors (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+  behavior_type TEXT NOT NULL, -- 'escalation_rule', 'approval_hint', 'vendor_approach'
+  priority INTEGER DEFAULT 100,
+  conditions JSONB DEFAULT '{}'::jsonb,
+  actions JSONB DEFAULT '{}'::jsonb,
+  active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+-- Add organization membership tracking
+ALTER TABLE public.users 
+ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES public.organizations(id);
+
+-- Add organization context to claims
+ALTER TABLE public.claims
+ADD COLUMN IF NOT EXISTS org_id UUID REFERENCES public.organizations(id);
+
+-- Create functions for vault operations
+CREATE OR REPLACE FUNCTION update_vault_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = now();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger for automatic timestamp updates
+CREATE TRIGGER set_timestamp_org_vaults
+BEFORE UPDATE ON public.org_vaults
+FOR EACH ROW
+EXECUTE PROCEDURE update_vault_timestamp();
+
+-- Create RLS policies for organization data
+CREATE POLICY org_isolation_policy ON public.org_vaults 
+FOR ALL USING (auth.uid() IN (
+  SELECT u.id FROM users u WHERE u.org_id = org_vaults.org_id
+));
+```
+
+## 2. TypeScript Types and Utilities
+
+```typescript
+// /lib/org/types.ts
+export type Organization = {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  settings: Record<string, any>;
+  active: boolean;
+};
+
+export type VaultType = 
+  | 'claim_patterns'
+  | 'vendor_insights'
+  | 'tech_behaviors'
+  | 'equipment_trends';
+
+export type OrganizationVault = {
+  id: string;
+  org_id: string;
+  vault_type: VaultType;
+  data: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+  version: number;
+};
+
+export type VaultEventType = 
+  | 'training'
+  | 'update'
+  | 'retrieval'
+  | 'inference';
+
+export type VaultLogEntry = {
+  id: string;
+  org_id: string;
+  vault_id: string;
+  event_type: VaultEventType;
+  data: Record<string, any>;
+  created_at: string;
+  created_by?: string;
+  metrics: Record<string, any>;
+};
+
+export type BehaviorType = 
+  | 'escalation_rule'
+  | 'approval_hint'
+  | 'vendor_approach';
+
+export type OrganizationBehavior = {
+  id: string;
+  org_id: string;
+  behavior_type: BehaviorType;
+  priority: number;
+  conditions: Record<string, any>;
+  actions: Record<string, any>;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+// Organization learning vault utilities
+// /lib/org/utils.ts
+import { supabase } from '@/lib/supabaseClient';
+import { 
+  Organization,
+  OrganizationVault,
+  VaultType,
+  VaultLogEntry,
+  VaultEventType
+} from './types';
+
+export async function getOrganizationById(orgId: string): Promise<Organization | null> {
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('*')
+    .eq('id', orgId)
+    .single();
+  
+  if (error) {
+    console.error('Error fetching organization:', error);
+    return null;
+  }
+  
+  return data;
+}
+
+export async function getVaultByType(orgId: string, vaultType: VaultType): Promise<OrganizationVault | null> {
+  const { data, error } = await supabase
+    .from('org_vaults')
+    .select('*')
+    .eq('org_id', orgId)
+    .eq('vault_type', vaultType)
+    .single();
+  
+  if (error) {
+    console.error(`Error fetching vault ${vaultType}:`, error);
+    return null;
+  }
+  
+  return data;
+}
+
+export async function updateVault(
+  orgId: string, 
+  vaultType: VaultType, 
+  newData: Record<string, any>,
+  userId?: string
+): Promise<boolean> {
+  // First get the current vault data
+  const vault = await getVaultByType(orgId, vaultType);
+  
+  if (!vault) {
+    // Create new vault if it doesn't exist
+    const { error } = await supabase
+      .from('org_vaults')
+      .insert({
+        org_id: orgId,
+        vault_type: vaultType,
+        data: newData,
+        version: 1
+      });
+    
+    if (error) {
+      console.error(`Error creating vault ${vaultType}:`, error);
+      return false;
+    }
+    
+    // Log the creation
+    await logVaultEvent(orgId, vault.id, 'update', { 
+      operation: 'create',
+      data: newData 
+    }, userId);
+    
+    return true;
+  }
+  
+  // Merge existing data with new data
+  const updatedData = {
+    ...vault.data,
+    ...newData
+  };
+  
+  // Update the vault
+  const { error } = await supabase
+    .from('org_vaults')
+    .update({ 
+      data: updatedData,
+      version: vault.version + 1
+    })
+    .eq('id', vault.id);
+  
+  if (error) {
+    console.error(`Error updating vault ${vaultType}:`, error);
+    return false;
+  }
+  
+  // Log the update
+  await logVaultEvent(orgId, vault.id, 'update', { 
+    operation: 'update',
+    previous_version: vault.version,
+    data: newData 
+  }, userId);
+  
+  return true;
+}
+
+export async function logVaultEvent(
+  orgId: string,
+  vaultId: string,
+  eventType: VaultEventType,
+  data: Record<string, any>,
+  userId?: string,
+  metrics: Record<string, any> = {}
+): Promise<VaultLogEntry | null> {
+  const { data: logEntry, error } = await supabase
+    .from('org_vault_logs')
+    .insert({
+      org_id: orgId,
+      vault_id: vaultId,
+      event_type: eventType,
+      data,
+      created_by: userId,
+      metrics
+    })
+    .select()
+    .single();
+  
+  if (error) {
+    console.error('Error logging vault event:', error);
+    return null;
+  }
+  
+  return logEntry;
+}
+```
+
+## 3. Core Learning Vault Service
+
+```typescript
+// /lib/org/OrgLearningVaultService.ts
+import { 
+  getVaultByType, 
+  updateVault, 
+  logVaultEvent 
+} from './utils';
+import { VaultType } from './types';
+import { MCP7MemoryManager } from '@/lib/mcp7/MemoryManager';
+
+export class OrgLearningVaultService {
+  private orgId: string;
+  private mcpManager: MCP7MemoryManager;
+  
+  constructor(orgId: string, mcpManager: MCP7MemoryManager) {
+    this.orgId = orgId;
+    this.mcpManager = mcpManager;
+  }
+  
+  // Process a new claim for organizational learning
+  async processClaimForLearning(claimData: any): Promise<void> {
+    // Extract relevant patterns and update claim patterns vault
+    const patterns = this.extractClaimPatterns(claimData);
+    await this.updateClaimPatterns(patterns);
+    
+    // Update vendor insights based on claim
+    if (claimData.vendor_id) {
+      await this.updateVendorInsights(claimData.vendor_id, claimData);
+    }
+    
+    // Update equipment trends
+    if (claimData.equipment_id) {
+      await this.updateEquipmentTrends(claimData.equipment_id, claimData);
+    }
+  }
+  
+  // Extract patterns from claim data
+  private extractClaimPatterns(claimData: any): Record<string, any> {
+    const { issue_type, resolution_time, approved, denial_reason, 
+            resubmission_count, escalation_required } = claimData;
+    
+    return {
+      issue_type: {
+        type: issue_type,
+        frequency: 1, // Will be aggregated
+        avg_resolution_time: resolution_time,
+        approval_rate: approved ? 1 : 0, // Will be averaged
+      },
+      resubmission_data: {
+        count: resubmission_count,
+        required_escalation: escalation_required
+      },
+      denial_reasons: denial_reason ? [denial_reason] : []
+    };
+  }
+  
+  // Update claim patterns in the organization vault
+  async updateClaimPatterns(newPatterns: Record<string, any>): Promise<void> {
+    const vault = await getVaultByType(this.orgId, 'claim_patterns');
+    
+    if (!vault) {
+      await updateVault(this.orgId, 'claim_patterns', {
+        patterns: {
+          [newPatterns.issue_type.type]: newPatterns.issue_type
+        },
+        resubmission_stats: {
+          counts: [newPatterns.resubmission_data.count],
+          escalation_rate: newPatterns.resubmission_data.required_escalation ? 1 : 0
+        },
+        common_denial_reasons: newPatterns.denial_reasons
+      });
+      return;
+    }
+    
+    // Merge existing patterns with new ones
+    const existingData = vault.data;
+    const issueType = newPatterns.issue_type.type;
+    
+    // Update or add issue type statistics
+    if (existingData.patterns && existingData.patterns[issueType]) {
+      const existing = existingData.patterns[issueType];
+      existingData.patterns[issueType] = {
+        type: issueType,
+        frequency: existing.frequency + 1,
+        avg_resolution_time: (existing.avg_resolution_time * existing.frequency + 
+                             newPatterns.issue_type.avg_resolution_time) / (existing.frequency + 1),
+        approval_rate: (existing.approval_rate * existing.frequency + 
+                       newPatterns.issue_type.approval_rate) / (existing.frequency + 1)
+      };
+    } else if (existingData.patterns) {
+      existingData.patterns[issueType] = {
+        ...newPatterns.issue_type,
+        frequency: 1
+      };
+    } else {
+      existingData.patterns = {
+        [issueType]: {
+          ...newPatterns.issue_type,
+          frequency: 1
+        }
+      };
+    }
+    
+    // Update resubmission statistics
+    if (existingData.resubmission_stats) {
+      existingData.resubmission_stats.counts.push(newPatterns.resubmission_data.count);
+      const escCount = existingData.resubmission_stats.counts.length;
+      existingData.resubmission_stats.escalation_rate = 
+        (existingData.resubmission_stats.escalation_rate * (escCount - 1) + 
+        (newPatterns.resubmission_data.required_escalation ? 1 : 0)) / escCount;
+    } else {
+      existingData.resubmission_stats = {
+        counts: [newPatterns.resubmission_data.count],
+        escalation_rate: newPatterns.resubmission_data.required_escalation ? 1 : 0
+      };
+    }
+    
+    // Update denial reasons
+    if (newPatterns.denial_reasons.length > 0) {
+      if (existingData.common_denial_reasons) {
+        existingData.common_denial_reasons = [
+          ...existingData.common_denial_reasons,
+          ...newPatterns.denial_reasons
+        ];
+      } else {
+        existingData.common_denial_reasons = [...newPatterns.denial_reasons];
+      }
+    }
+    
+    await updateVault(this.orgId, 'claim_patterns', existingData);
+  }
+  
+  // Update vendor insights based on a claim
+  async updateVendorInsights(vendorId: string, claimData: any): Promise<void> {
+    const vault = await getVaultByType(this.orgId, 'vendor_insights');
+    const { 
+      approved, 
+      response_time, 
+      denial_reason, 
+      resolution_time,
+      claim_id
+    } = claimData;
+    
+    const newInsight = {
+      vendor_id: vendorId,
+      claims_processed: 1,
+      approval_rate: approved ? 1 : 0,
+      avg_response_time: response_time,
+      avg_resolution_time: resolution_time,
+      denial_reasons: denial_reason ? [denial_reason] : [],
+      recent_claims: [claim_id]
+    };
+    
+    if (!vault) {
+      await updateVault(this.orgId, 'vendor_insights', {
+        vendors: {
+          [vendorId]: newInsight
+        }
+      });
+      return;
+    }
+    
+    // Update existing vendor data
+    const existingData = vault.data;
+    
+    if (existingData.vendors && existingData.vendors[vendorId]) {
+      const existing = existingData.vendors[vendorId];
+      const newCount = existing.claims_processed + 1;
+      
+      existingData.vendors[vendorId] = {
+        ...existing,
+        claims_processed: newCount,
+        approval_rate: (existing.approval_rate * existing.claims_processed + (approved ? 1 : 0)) / newCount,
+        avg_response_time: (existing.avg_response_time * existing.claims_processed + response_time) / newCount,
+        avg_resolution_time: resolution_time ? 
+          (existing.avg_resolution_time * existing.claims_processed + resolution_time) / newCount :
+          existing.avg_resolution_time,
+        denial_reasons: denial_reason ? 
+          [...existing.denial_reasons, denial_reason] : 
+          existing.denial_reasons,
+        recent_claims: [claim_id, ...existing.recent_claims].slice(0, 10) // Keep last 10 claims
+      };
+    } else if (existingData.vendors) {
+      existingData.vendors[vendorId] = newInsight;
+    } else {
+      existingData.vendors = {
+        [vendorId]: newInsight
+      };
+    }
+    
+    await updateVault(this.orgId, 'vendor_insights', existingData);
+  }
+  
+  // Update equipment trends based on claim data
+  async updateEquipmentTrends(equipmentId: string, claimData: any): Promise<void> {
+    const vault = await getVaultByType(this.orgId, 'equipment_trends');
+    const {
+      issue_type,
+      approved,
+      equipment_age,
+      claim_id,
+      model,
+      manufacturer
+    } = claimData;
+    
+    const newTrend = {
+      equipment_id: equipmentId,
+      model: model,
+      manufacturer: manufacturer,
+      claims_count: 1,
+      approval_rate: approved ? 1 : 0,
+      issue_types: issue_type ? {[issue_type]: 1} : {},
+      avg_age_at_failure: equipment_age || 0,
+      recent_claims: [claim_id]
+    };
+    
+    if (!vault) {
+      await updateVault(this.orgId, 'equipment_trends', {
+        equipment: {
+          [equipmentId]: newTrend
+        }
+      });
+      return;
+    }
+    
+    // Update existing equipment data
+    const existingData = vault.data;
+    
+    if (existingData.equipment && existingData.equipment[equipmentId]) {
+      const existing = existingData.equipment[equipmentId];
+      const newCount = existing.claims_count + 1;
+      
+      const updatedIssueCounts = {...existing.issue_types};
+      if (issue_type) {
+        updatedIssueCounts[issue_type] = (updatedIssueCounts[issue_type] || 0) + 1;
+      }
+      
+      existingData.equipment[equipmentId] = {
+        ...existing,
+        claims_count: newCount,
+        approval_rate: (existing.approval_rate * existing.claims_count + (approved ? 1 : 0)) / newCount,
+        issue_types: updatedIssueCounts,
+        avg_age_at_failure: equipment_age ? 
+          (existing.avg_age_at_failure * existing.claims_count + equipment_age) / newCount :
+          existing.avg_age_at_failure,
+        recent_claims: [claim_id, ...existing.recent_claims].slice(0, 10)
+      };
+    } else if (existingData.equipment) {
+      existingData.equipment[equipmentId] = newTrend;
+    } else {
+      existingData.equipment = {
+        [equipmentId]: newTrend
+      };
+    }
+    
+    await updateVault(this.orgId, 'equipment_trends', existingData);
+  }
+  
+  // Query the vault for organization-specific recommendations
+  async getRecommendations(context: any): Promise<any> {
+    const { 
+      claim_type, 
+      vendor_id, 
+      equipment_id, 
+      equipment_model,
+      user_id,
+      issue_description 
+    } = context;
+    
+    // Build recommendation context from org vaults
+    const claimPatternsVault = await getVaultByType(this.orgId, 'claim_patterns');
+    const vendorInsightsVault = await getVaultByType(this.orgId, 'vendor_insights');
+    const equipmentTrendsVault = await getVaultByType(this.orgId, 'equipment_trends');
+    const techBehaviorsVault = await getVaultByType(this.orgId, 'tech_behaviors');
+    
+    // Compile all relevant organizational knowledge
+    const orgKnowledge = {
+      claim_patterns: claimPatternsVault?.data || {},
+      vendor_insights: vendor_id && vendorInsightsVault?.data?.vendors?.[vendor_id] || {},
+      equipment_trends: equipment_id && equipmentTrendsVault?.data?.equipment?.[equipment_id] || {},
+      tech_behavior: user_id && techBehaviorsVault?.data?.techs?.[user_id] || {}
+    };
+    
+    // Log this retrieval event
+    if (claimPatternsVault) {
+      await logVaultEvent(
+        this.orgId,
+        claimPatternsVault.id,
+        'retrieval',
+        { context }
+      );
+    }
+    
+    // Integrate with MCP7 memory layer
+    const mcpRecommendations = await this.mcpManager.getRecommendations({
+      ...context,
+      org_knowledge: orgKnowledge
+    });
+    
+    // Generate org-specific recommendations by enriching MCP recommendations
+    const recommendations = this.enhanceRecommendationsWithOrgInsights(
+      mcpRecommendations,
+      orgKnowledge
+    );
+    
+    return recommendations;
+  }
+  
+  // Enhance MCP recommendations with organization-specific insights
+  private enhanceRecommendationsWithOrgInsights(
+    mcpRecommendations: any,
+    orgKnowledge: Record<string, any>
+  ): any {
+    // Start with MCP recommendations
+    const enhancedRecommendations = [...mcpRecommendations];
+    
+    // Add organization-specific advice based on learning vaults
+    if (orgKnowledge.vendor_insights?.approval_rate < 0.4) {
+      enhancedRecommendations.push({
+        type: 'org_insight',
+        confidence: 0.85,
+        title: 'Based on your organization\'s history',
+        message: 'This vendor has a low approval rate with your team. Consider gathering additional evidence before submitting.',
+        action: 'evidence_preparation'
+      });
+    }
+    
+    if (orgKnowledge.equipment_trends?.issue_types) {
+      // Find most common issue for this equipment
+      const issueTypes = orgKnowledge.equipment_trends.issue_types;
+      const mostCommonIssue = Object.keys(issueTypes).reduce(
+        (max, type) => issueTypes[type] > issueTypes[max] ? type : max, 
+        Object.keys(issueTypes)[0]
+      );
+      
+      enhancedRecommendations.push({
+        type: 'org_insight',
+        confidence: 0.75,
+        title: 'Equipment-specific advice',
+        message: `This model commonly experiences "${mostCommonIssue}" issues in your organization. Consider highlighting this pattern to the vendor.`,
+        action: 'highlight_pattern'
+      });
+    }
+    
+    return enhancedRecommendations;
+  }
+  
+  // Train the learning vault with explicit feedback
+  async trainWithFeedback(
+    feedbackData: any, 
+    vaultType: VaultType, 
+    userId?: string
+  ): Promise<boolean> {
+    const vault = await getVaultByType(this.orgId, vaultType);
+    
+    if (!vault) {
+      console.error(`Cannot train non-existent vault: ${vaultType}`);
+      return false;
+    }
+    
+    // Log the training event
+    await logVaultEvent(
+      this.orgId,
+      vault.id,
+      'training',
+      feedbackData,
+      userId
+    );
+    
+    // Update the vault with the training data
+    const updatedData = this.applyTrainingToVault(vault.data, feedbackData, vaultType);
+    
+    return await updateVault(
+      this.orgId,
+      vaultType,
+      updatedData,
+      userId
+    );
+  }
+  
+  // Apply training feedback to vault data
+  private applyTrainingToVault(
+    currentData: Record<string, any>,
+    feedbackData: any,
+    vaultType: VaultType
+  ): Record<string, any> {
+    // Implementation would vary by vault type
+    switch (vaultType) {
+      case 'claim_patterns':
+        // Update claim pattern weights based on feedback
+        if (feedbackData.issue_type && currentData.patterns?.[feedbackData.issue_type]) {
+          const pattern = currentData.patterns[feedbackData.issue_type];
+          pattern.weight = (pattern.weight || 1) * feedbackData.effectiveness;
+        }
+        break;
+        
+      case 'vendor_insights':
+        // Update vendor insight confidence based on feedback
+        if (feedbackData.vendor_id && currentData.vendors?.[feedbackData.vendor_id]) {
+          const vendor = currentData.vendors[feedbackData.vendor_id];
+          vendor.confidence_score = (vendor.confidence_score || 0.5) * 0.8 + feedbackData.accuracy * 0.2;
+        }
+        break;
+        
+      // Other vault types...
+    }
+    
+    return currentData;
+  }
+  
+  // Expose introspect endpoint data
+  async getIntrospectData(): Promise<Record<string, any>> {
+    const vaultTypes: VaultType[] = [
+      'claim_patterns',
+      'vendor_insights',
+      'equipment_trends',
+      'tech_behaviors'
+    ];
+    
+    const vaults = await Promise.all(
+      vaultTypes.map(async (type) => {
+        const vault = await getVaultByType(this.orgId, type);
+        return {
+          type,
+          exists: !!vault,
+          version: vault?.version || 0,
+          last_updated: vault?.updated_at || null,
+          data_points: vault ? this.countDataPoints(vault.data, type) : 0
+        };
+      })
+    );
+    
+    return {
+      org_id: this.orgId,
+      vaults: vaults.reduce((acc, vault) => {
+        acc[vault.type] = {
+          exists: vault.exists,
+          version: vault.version,
+          last_updated: vault.last_updated,
+          data_points: vault.data_points
+        };
+        return acc;
+      }, {} as Record<string, any>)
+    };
+  }
+  
+  // Count data points in a vault for introspection
+  private countDataPoints(data: Record<string, any>, type: VaultType): number {
+    switch (type) {
+      case 'claim_patterns':
+        return Object.keys(data.patterns || {}).length;
+      case 'vendor_insights':
+        return Object.keys(data.vendors || {}).length;
+      case 'equipment_trends':
+        return Object.keys(data.equipment || {}).length;
+      case 'tech_behaviors':
+        return Object.keys(data.techs || {}).length;
+      default:
+        return 0;
+    }
+  }
+}
+```
+
+## 4. Integration with Existing Claimr Components
+
+```typescript
+// /lib/org/integration.ts
+import { OrgLearningVaultService } from './OrgLearningVaultService';
+import { MCP7MemoryManager } from '@/lib/mcp7/MemoryManager';
+
+// Hook into claim creation workflow
+export async function integrateWithClaimWorkflow(
+  claimData: any,
+  orgId: string,
+  mcpManager: MCP7MemoryManager
+): Promise<void> {
+  const vaultService = new OrgLearningVaultService(orgId, mcpManager);
+  
+  // Process the claim for organizational learning
+  await vaultService.processClaimForLearning(claimData);
+  
+  // Update MCP memory stream with organization context
+  await mcpManager.addToMemoryStream({
+    event_type: 'claim_creation',
+    data: claimData,
+    metadata: {
+      org_id: orgId,
+      org_context: true
+    }
+  });
+}
+
+// Hook into recommendation engine
+export async function enhanceRecommendationsWithOrgInsights(
+  context: any,
+  orgId: string,
+  mcpManager: MCP7MemoryManager
+): Promise<any[]> {
+  const vaultService = new OrgLearningVaultService(orgId, mcpManager);
+  
+  // Get organization-enhanced recommendations
+  return await vaultService.getRecommendations(context);
+}
+
+// Integrate with existing MCPLinker Mini Module
+export async function registerWithMCPLinker(orgId: string): Promise<void> {
+  // Register the organization vault capabilities with MCPLinker
+  // This exposes the vault's functionality to the broader system
+  await fetch('/api/mcp/register-tool', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      tool_id: `org_vault_${orgId}`,
+      tool_type: 'memory_provider',
+      capabilities: [
+        'org_specific_recommendations',
+        'vendor_insights',
+        'equipment_trends',
+        'claim_patterns'
+      ],
+      metadata: {
+        org_id: orgId,
+        is_private: true,
+        isolation_level: 'organization'
+      }
+    })
+  });
+}
+
+// API route handler for introspection
+export async function handleIntrospectRequest(
+  req: any,
+  res: any
+): Promise<void> {
+  const { org_id } = req.query;
+  
+  if (!org_id) {
+    res.status(400).json({ error: 'Missing organization ID' });
+    return;
+  }
+  
+  const mcpManager = new MCP7MemoryManager();
+  const vaultService = new OrgLearningVaultService(org_id, mcpManager);
+  
+  try {
+    const introspectData = await vaultService.getIntrospectData();
+    res.status(200).json(introspectData);
+  } catch (error) {
+    console.error('Error in introspect handler:', error);
+    res.status(500).json({ error: 'Failed to retrieve introspect data' });
+  }
+}
+```
+
+## 5. UI Components & Hooks
+
+```typescript
+// /lib/org/hooks/useOrgLearning.ts
+import { useState, useEffect, useCallback } from 'react';
+import { supabase } from '@/lib/supabaseClient';
+import { Organization, VaultType } from '../types';
+
+export function useOrgLearning(orgId: string) {
+  const [organization, setOrganization] = useState<Organization | null>(null);
+  const [vaultStats, setVaultStats] = useState<Record<string, any>>({});
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Fetch organization and vault stats
+  const fetchOrgData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Fetch organization data
+      const { data: orgData, error: orgError } = await supabase
+        .from('organizations')
+        .select('*')

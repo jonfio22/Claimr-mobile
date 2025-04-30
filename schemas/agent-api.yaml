@@ -1,0 +1,784 @@
+openapi: 3.0.3
+info:
+  title: Claimr AgentBridge API
+  description: API for agent integration with Claimr's MCP7 intelligence layer
+  version: 1.0.0
+  contact:
+    name: Claimr Support
+    email: support@claimr.app
+servers:
+  - url: https://app.claimr.app/api
+    description: Production server
+  - url: http://localhost:3000/api
+    description: Local development server
+paths:
+  /agent/claim/{id}/context:
+    get:
+      summary: Get full context for a claim
+      description: Returns comprehensive information about a claim, including status, history, and related entities
+      tags:
+        - ClaimContext
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique identifier of the claim
+        - name: x-api-key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: API key for authentication
+        - name: x-agent-id
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional identifier for the agent making the request
+      responses:
+        '200':
+          description: Successful response with claim context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimContextResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  
+  /agent/claim/{id}/timeline:
+    get:
+      summary: Get memory timeline for a claim
+      description: Returns a chronological timeline of events, updates, and activities for a claim
+      tags:
+        - ClaimMemory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique identifier of the claim
+        - name: x-api-key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: API key for authentication
+        - name: x-agent-id
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional identifier for the agent making the request
+      responses:
+        '200':
+          description: Successful response with claim timeline
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimTimelineResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  
+  /agent/claim/{id}/recommendations:
+    get:
+      summary: Get recommendations for a claim
+      description: Returns AI-powered recommendations for next actions and insights for a claim
+      tags:
+        - Recommendations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique identifier of the claim
+        - name: x-api-key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: API key for authentication
+        - name: x-agent-id
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional identifier for the agent making the request
+      responses:
+        '200':
+          description: Successful response with claim recommendations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  
+  /agent/vendor/{id}/context:
+    get:
+      summary: Get context for a vendor
+      description: Returns comprehensive information about a vendor's history, performance, and relationship patterns
+      tags:
+        - VendorInsights
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique identifier of the vendor
+        - name: x-api-key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: API key for authentication
+        - name: x-agent-id
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional identifier for the agent making the request
+      responses:
+        '200':
+          description: Successful response with vendor context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VendorContextResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  
+  /agent/equipment/{id}/context:
+    get:
+      summary: Get context for equipment
+      description: Returns comprehensive information about equipment history, maintenance, and issues
+      tags:
+        - EquipmentInsights
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Unique identifier of the equipment
+        - name: x-api-key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: API key for authentication
+        - name: x-agent-id
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Optional identifier for the agent making the request
+      responses:
+        '200':
+          description: Successful response with equipment context
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EquipmentContextResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  
+  /agent/schema:
+    get:
+      summary: Get API schema
+      description: Returns the OpenAPI specification for the AgentBridge API
+      tags:
+        - Schema
+      parameters:
+        - name: x-api-key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: API key for authentication
+      responses:
+        '200':
+          description: Successful response with API schema
+          content:
+            application/yaml:
+              schema:
+                type: string
+            application/json:
+              schema:
+                type: object
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ServerError'
+  
+  /webhook/anomaly-detected:
+    post:
+      summary: Report an anomaly detection
+      description: Endpoint for external systems to report anomalies detected in claims or vendor behavior
+      tags:
+        - Webhooks
+        - AnomalyEvents
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnomalyWebhookRequest'
+      responses:
+        '200':
+          description: Anomaly successfully recorded
+        '400':
+          description: Invalid request format or missing required fields
+        '500':
+          $ref: '#/components/responses/ServerError'
+  
+  /webhook/claim-updated:
+    post:
+      summary: Report a claim update
+      description: Endpoint for external systems to report updates to claims
+      tags:
+        - Webhooks
+        - ClaimUpdates
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimUpdateWebhookRequest'
+      responses:
+        '200':
+          description: Claim update successfully recorded
+        '400':
+          description: Invalid request format or missing required fields
+        '500':
+          $ref: '#/components/responses/ServerError'
+
+components:
+  schemas:
+    ClaimContextResponse:
+      type: object
+      properties:
+        claimId:
+          type: string
+        context:
+          type: object
+          properties:
+            status:
+              type: string
+              enum: [open, in_progress, resolved, canceled]
+            customer:
+              $ref: '#/components/schemas/Customer'
+            vendor:
+              $ref: '#/components/schemas/Vendor'
+            equipment:
+              $ref: '#/components/schemas/Equipment'
+            issues:
+              type: array
+              items:
+                $ref: '#/components/schemas/Issue'
+            history:
+              type: array
+              items:
+                $ref: '#/components/schemas/ClaimEvent'
+            anomalies:
+              type: array
+              items:
+                $ref: '#/components/schemas/Anomaly'
+        _meta:
+          $ref: '#/components/schemas/MetaData'
+
+    ClaimTimelineResponse:
+      type: object
+      properties:
+        claimId:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemoryEvent'
+        _meta:
+          $ref: '#/components/schemas/MetaData'
+
+    RecommendationsResponse:
+      type: object
+      properties:
+        claimId:
+          type: string
+        recommendations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Recommendation'
+        _meta:
+          $ref: '#/components/schemas/MetaData'
+
+    VendorContextResponse:
+      type: object
+      properties:
+        vendorId:
+          type: string
+        context:
+          type: object
+          properties:
+            profile:
+              $ref: '#/components/schemas/VendorProfile'
+            metrics:
+              $ref: '#/components/schemas/VendorMetrics'
+            recentClaims:
+              type: array
+              items:
+                $ref: '#/components/schemas/ClaimSummary'
+            anomalyPatterns:
+              type: array
+              items:
+                $ref: '#/components/schemas/AnomalyPattern'
+        _meta:
+          $ref: '#/components/schemas/MetaData'
+
+    EquipmentContextResponse:
+      type: object
+      properties:
+        equipmentId:
+          type: string
+        context:
+          type: object
+          properties:
+            details:
+              $ref: '#/components/schemas/EquipmentDetails'
+            maintenanceHistory:
+              type: array
+              items:
+                $ref: '#/components/schemas/MaintenanceRecord'
+            commonIssues:
+              type: array
+              items:
+                $ref: '#/components/schemas/CommonIssue'
+            relatedClaims:
+              type: array
+              items:
+                $ref: '#/components/schemas/ClaimSummary'
+        _meta:
+          $ref: '#/components/schemas/MetaData'
+
+    AnomalyWebhookRequest:
+      type: object
+      required:
+        - claimId
+        - anomalyType
+      properties:
+        claimId:
+          type: string
+        anomalyType:
+          type: string
+          enum: [response_delay, price_discrepancy, unusual_pattern, policy_violation, equipment_mismatch]
+        anomalyDetails:
+          type: object
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+          default: medium
+        timestamp:
+          type: string
+          format: date-time
+
+    ClaimUpdateWebhookRequest:
+      type: object
+      required:
+        - claimId
+        - updateType
+      properties:
+        claimId:
+          type: string
+        updateType:
+          type: string
+          enum: [status_change, vendor_assigned, vendor_response, customer_update, resolution, escalation]
+        updateDetails:
+          type: object
+        agentId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    Customer:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        address:
+          type: string
+        claimHistory:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimSummary'
+
+    Vendor:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: string
+        specialties:
+          type: array
+          items:
+            type: string
+        averageResponseTime:
+          type: number
+        reliabilityScore:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+
+    Equipment:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        model:
+          type: string
+        serialNumber:
+          type: string
+        purchaseDate:
+          type: string
+          format: date
+        warrantyExpiration:
+          type: string
+          format: date
+        maintenanceHistory:
+          type: array
+          items:
+            $ref: '#/components/schemas/MaintenanceRecord'
+
+    Issue:
+      type: object
+      properties:
+        id:
+          type: string
+        description:
+          type: string
+        reportedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [reported, acknowledged, diagnosed, in_repair, resolved]
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+
+    ClaimEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        type:
+          type: string
+        description:
+          type: string
+        actor:
+          type: string
+        data:
+          type: object
+
+    Anomaly:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        detectedAt:
+          type: string
+          format: date-time
+        severity:
+          type: string
+          enum: [low, medium, high, critical]
+        description:
+          type: string
+        relatedEvents:
+          type: array
+          items:
+            type: string
+
+    MemoryEvent:
+      type: object
+      properties:
+        id:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        eventType:
+          type: string
+        eventData:
+          type: object
+        source:
+          type: string
+        importance:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+
+    Recommendation:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        priority:
+          type: string
+          enum: [low, medium, high, critical]
+        confidence:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 100
+        actionUrl:
+          type: string
+          format: uri
+        supportingData:
+          type: object
+
+    VendorProfile:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        specialties:
+          type: array
+          items:
+            type: string
+        contactInfo:
+          type: object
+        registrationDate:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [active, inactive, suspended]
+
+    VendorMetrics:
+      type: object
+      properties:
+        responseTime:
+          type: object
+          properties:
+            average:
+              type: number
+            trend:
+              type: string
+              enum: [improving, stable, degrading]
+        approvalRate:
+          type: number
+          format: float
+        escalationRate:
+          type: number
+          format: float
+        customerSatisfaction:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 5
+
+    ClaimSummary:
+      type: object
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastUpdated:
+          type: string
+          format: date-time
+        equipmentType:
+          type: string
+        issueType:
+          type: string
+        resolution:
+          type: string
+
+    AnomalyPattern:
+      type: object
+      properties:
+        type:
+          type: string
+        frequency:
+          type: number
+        impact:
+          type: string
+          enum: [low, medium, high, critical]
+        description:
+          type: string
+        suggestedMitigation:
+          type: string
+
+    EquipmentDetails:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        model:
+          type: string
+        manufacturer:
+          type: string
+        category:
+          type: string
+        purchaseDate:
+          type: string
+          format: date
+        warrantyExpiration:
+          type: string
+          format: date
+        specifications:
+          type: object
+
+    MaintenanceRecord:
+      type: object
+      properties:
+        id:
+          type: string
+        date:
+          type: string
+          format: date
+        type:
+          type: string
+          enum: [preventive, corrective, inspection]
+        description:
+          type: string
+        technician:
+          type: string
+        parts:
+          type: array
+          items:
+            type: string
+        cost:
+          type: number
+          format: float
+
+    CommonIssue:
+      type: object
+      properties:
+        issueType:
+          type: string
+        frequency:
+          type: number
+        averageResolutionTime:
+          type: number
+        typicalSeverity:
+          type: string
+          enum: [low, medium, high, critical]
+        resolutionSteps:
+          type: array
+          items:
+            type: string
+
+    MetaData:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        version:
+          type: string
+        source:
+          type: string
+        processingTimeMs:
+          type: number
+
+  responses:
+    Unauthorized:
+      description: Authentication failed or API key is invalid
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              code:
+                type: string
+              message:
+                type: string
+
+    NotFound:
+      description: The requested resource was not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              code:
+                type: string
+              message:
+                type: string
+
+    ServerError:
+      description: An internal server error occurred
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              code:
+                type: string
+              message:
+                type: string
