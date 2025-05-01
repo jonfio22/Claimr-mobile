@@ -15,13 +15,19 @@ export interface ToolRegistry {
 
 export type AgentRequest = {
   action: string;
-  [key: string]: any; // Additional parameters specific to the action
+  entityType?: string; // Type of entity this request is about (claim, equipment, etc.)
+  entityId?: string; // ID of the entity this request is about
   orgId?: string; // Organization context
   sessionId?: string; // For tracking conversation/session state
   context?: Record<string, any>; // Additional context
+  params?: Record<string, any>; // Parameters for the action
+  source?: string; // Source of the request (api, ui, a2a, etc.)
+  timestamp?: string; // ISO timestamp of when the request was created
+  [key: string]: any; // Additional parameters specific to the action
 };
 
 export type AgentResponse = {
+  id?: string; // Unique ID for this response
   result: any;
   explanation?: string;
   toolsUsed?: string[];

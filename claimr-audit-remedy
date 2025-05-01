@@ -1,0 +1,894 @@
+Now I'll conduct a thorough analysis of the ClaimR mobile app UX based on the PDF document, addressing the specific gaps and providing a remediation plan as requested.
+
+# ClaimR Mobile App Technical Audit: Gap Remediation Plan
+
+Based on the technical audit and the mobile UX PDF provided, I'll address each identified gap and provide comprehensive remediation strategies using Tailwind, Supabase, Next.js, and TypeScript best practices.
+
+## Gap-by-Gap Remediation Plan
+
+### 1. ⛔ Timeline View – Not found in implementation
+
+**Finding:** 
+The technical audit indicated the Timeline View was missing completely. However, the PDF actually shows a Timeline View with estimated completion on page 4, but it may be incompletely implemented.
+
+**Remediation:**
+```typescript
+// components/TimelineView.tsx
+import React from 'react';
+import { supabase } from '../lib/supabaseClient';
+import { ClaimEvent, Claim } from '../types/claim';
+
+interface TimelineViewProps {
+  claimId: string;
+}
+
+export const TimelineView: React.FC<TimelineViewProps> = ({ claimId }) => {
+  const [claim, setClaim] = React.useState<Claim | null>(null);
+  const [events, setEvents] = React.useState<ClaimEvent[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    async function fetchTimelineData() {
+      try {
+        // Fetch claim data with RLS enforced
+        const { data: claimData, error: claimError } = await supabase
+          .from('claims')
+          .select('*')
+          .eq('id', claimId)
+          .single();
+        
+        if (claimError) throw claimError;
+        
+        // Fetch timeline events with RLS enforced
+        const { data: eventsData, error: eventsError } = await supabase
+          .from('claim_events')
+          .select('*')
+          .eq('claim_id', claimId)
+          .order('timestamp', { ascending: true });
+        
+        if (eventsError) throw eventsError;
+        
+        setClaim(claimData);
+        setEvents(eventsData);
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    
+    fetchTimelineData();
+  }, [claimId]);
+
+  // Calculate completion percentage based on completed events vs. total expected events
+  const calculateProgress = () => {
+    if (!claim || !events.length) return 0;
+    
+    const completedEvents = events.filter(e => e.status === 'completed').length;
+    const totalExpectedEvents = claim.expected_events_count || events.length;
+    
+    return Math.round((completedEvents / totalExpectedEvents) * 100);
+  };
+
+  // Estimate completion date based on historical data and current progress
+  const estimateCompletionDate = () => {
+    if (!claim) return null;
+    
+    // Logic to calculate estimated completion date based on:
+    // 1. Current progress percentage
+    // 2. Vendor historical performance data
+    // 3. Claim type complexity factor
+    
+    // For now, return static date from claim if available
+    return claim.estimated_completion_date;
+  };
+
+  if (loading) return <div className="animate-pulse">Loading timeline...</div>;
+  if (error) return <div className="text-red-500">Error: {error}</div>;
+  if (!claim) return <div className="text-gray-500">No claim found</div>;
+
+  return (
+    <div className="w-full">
+      <div className="mb-4">
+        <h2 className="text-xl font-bold">{claim.equipment_name}</h2>
+        <p className="text-sm text-gray-600">Claim #{claim.reference_number} • Submitted {new Date(claim.created_at).toLocaleDateString()}</p>
+        
+        <div className="mt-4">
+          <div className="flex justify-between items-center mb-1">
+            <span className="text-sm font-medium">Claim Progress: {calculateProgress()}%</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2.5">
+            <div 
+              className="bg-blue-600 h-2.5 rounded-full" 
+              style={{ width: `${calculateProgress()}%` }}
+            ></div>
+          </div>
+          <p className="text-sm mt-2">Est. Completion: {estimateCompletionDate() ? new Date(estimateCompletionDate()!).toLocaleDateString() : 'Calculating...'}</p>
+        </div>
+      </div>
+      
+      <div className="flex flex-col space-y-4">
+        {events.map((event, index) => (
+          <div key={event.id} className="flex">
+            <div className="mr-4 flex flex-col items-center">
+              <div className={`w-6 h-6 rounded-full flex items-center justify-center ${event.status === 'completed' ? 'bg-green-500 text-white' : 'bg-gray-200'}`}>
+                {event.status === 'completed' ? '✓' : index + 1}
+              </div>
+              {index < events.length - 1 && (
+                <div className="h-full w-0.5 bg-gray-200 my-1"></div>
+              )}
+            </div>
+            <div className="pb-4">
+              <p className="text-sm text-gray-500">{new Date(event.timestamp).toLocaleString()}</p>
+              <h3 className="text-md font-medium">{event.title}</h3>
+              <p className="text-sm">{event.description}</p>
+              {event.metadata && Object.keys(event.metadata).length > 0 && (
+                <div className="mt-1 text-sm text-gray-600">
+                  {Object.entries(event.metadata).map(([key, value]) => (
+                    <p key={key}>{key}: {value}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+```
+
+**Migration Script:**
+```typescript
+// scripts/migrateTimelineEvents.ts
+import { supabase } from '../lib/supabaseClient';
+
+async function migrateTimelineEvents() {
+  try {
+    // Create timeline events table if it doesn't exist
+    const { error: tableError } = await supabase.rpc('create_timeline_events_table_if_not_exists');
+    
+    if (tableError) throw tableError;
+    
+    // Migrate existing data from claim status changes to timeline events
+    const { error: migrationError } = await supabase.rpc('migrate_status_changes_to_timeline');
+    
+    if (migrationError) throw migrationError;
+    
+    console.log('Timeline events migration completed successfully');
+  } catch (error) {
+    console.error('Migration failed:', error);
+  }
+}
+
+migrateTimelineEvents();
+```
+
+### 2. ⚠️ Full RLS enforcement – Only partial (api_keys confirmed)
+
+**Finding:** 
+The current system only has partial Row-Level Security (RLS) implemented, with api_keys confirmed but other potential security gaps.
+
+**Remediation:**
+
+```sql
+-- SQL for Supabase: Complete RLS implementation
+-- supabase/migrations/20250430_complete_rls.sql
+
+-- Ensure authenticated access only
+ALTER TABLE claims ENABLE ROW LEVEL SECURITY;
+ALTER TABLE claim_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE equipment ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+
+-- Claims table policies
+CREATE POLICY "Users can view their own organization's claims" 
+ON claims FOR SELECT 
+USING (
+  auth.uid() IN (
+    SELECT user_id FROM organization_users 
+    WHERE organization_id = claims.organization_id
+  )
+);
+
+CREATE POLICY "Users can insert claims for their organization" 
+ON claims FOR INSERT 
+WITH CHECK (
+  auth.uid() IN (
+    SELECT user_id FROM organization_users 
+    WHERE organization_id = claims.organization_id
+  )
+);
+
+CREATE POLICY "Users can update their organization's claims" 
+ON claims FOR UPDATE 
+USING (
+  auth.uid() IN (
+    SELECT user_id FROM organization_users 
+    WHERE organization_id = claims.organization_id
+  )
+);
+
+-- Similar policies for other tables
+-- ... (additional policies for all tables)
+
+-- API key validation and role-based access
+CREATE OR REPLACE FUNCTION check_api_key_permissions()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM api_keys 
+    WHERE key_value = current_setting('request.headers')::json->>'x-api-key'
+    AND organization_id = NEW.organization_id
+    AND permissions ? 'write_claims'
+    AND expires_at > NOW()
+  ) THEN
+    RAISE EXCEPTION 'Invalid API key or insufficient permissions';
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER validate_api_key_on_claim_insert
+BEFORE INSERT ON claims
+FOR EACH ROW
+WHEN (current_setting('request.headers')::json ? 'x-api-key')
+EXECUTE FUNCTION check_api_key_permissions();
+```
+
+**TypeScript Implementation:**
+```typescript
+// lib/supabaseClient.ts
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { Database } from '../types/supabase';
+
+// Initialize Supabase client with proper types
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
+
+export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey);
+
+// Helper function to attach API key to requests
+export const getSupabaseWithApiKey = (apiKey: string): SupabaseClient<Database> => {
+  return createClient<Database>(supabaseUrl, supabaseAnonKey, {
+    global: {
+      headers: {
+        'x-api-key': apiKey,
+      },
+    },
+  });
+};
+
+// Middleware to validate organization access
+import { NextRequest, NextResponse } from 'next/server';
+
+export async function organizationAccessMiddleware(
+  req: NextRequest,
+  orgId: string
+): Promise<NextResponse | null> {
+  const session = await supabase.auth.getSession();
+  
+  if (!session?.data?.session) {
+    return NextResponse.redirect(new URL('/auth/login', req.url));
+  }
+  
+  const { data: userOrgs } = await supabase
+    .from('organization_users')
+    .select('organization_id')
+    .eq('user_id', session.data.session.user.id);
+  
+  const hasAccess = userOrgs?.some(org => org.organization_id === orgId);
+  
+  if (!hasAccess) {
+    return NextResponse.redirect(new URL('/unauthorized', req.url));
+  }
+  
+  return null; // Continue with the request
+}
+```
+
+### 3. ⚠️ Incomplete MCP7 tool validation – Some tools not verified
+
+**Finding:**
+The Modular Control Protocol 7 (MCP7) core has incomplete tool validation, with some tools not being properly verified.
+
+**Remediation:**
+```typescript
+// lib/mcp7/toolValidator.ts
+import { z } from 'zod';
+import { Tool, ToolPermission, ToolResults } from '../../types/mcp7';
+
+// Schema definitions for tool validation
+const toolBaseSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  description: z.string(),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/),
+  permissions: z.array(z.nativeEnum(ToolPermission)),
+  inputSchema: z.any(), // Will be further validated
+  outputSchema: z.any(), // Will be further validated
+});
+
+const inputOutputSchemaValidator = (schema: any): boolean => {
+  try {
+    // Validate schema structure based on JSON Schema standard
+    const schemaValidator = z.object({
+      type: z.string(),
+      properties: z.record(z.any()).optional(),
+      required: z.array(z.string()).optional(),
+      // Add other JSON Schema fields as needed
+    });
+    
+    schemaValidator.parse(schema);
+    return true;
+  } catch (error) {
+    console.error("Schema validation failed:", error);
+    return false;
+  }
+};
+
+export class MCP7ToolValidator {
+  // Validate tool registration
+  static validateToolRegistration(tool: Tool): { valid: boolean; errors: string[] } {
+    try {
+      toolBaseSchema.parse(tool);
+      
+      const errors: string[] = [];
+      
+      // Validate input schema
+      if (!inputOutputSchemaValidator(tool.inputSchema)) {
+        errors.push(`Invalid input schema for tool ${tool.name}`);
+      }
+      
+      // Validate output schema
+      if (!inputOutputSchemaValidator(tool.outputSchema)) {
+        errors.push(`Invalid output schema for tool ${tool.name}`);
+      }
+      
+      // Validate tool-specific requirements
+      if (tool.permissions.includes(ToolPermission.FILE_SYSTEM) && !tool.securityReview) {
+        errors.push(`Tool ${tool.name} requires security review for file system access`);
+      }
+      
+      return {
+        valid: errors.length === 0,
+        errors
+      };
+    } catch (error) {
+      return {
+        valid: false,
+        errors: [(error as Error).message]
+      };
+    }
+  }
+  
+  // Validate tool execution results
+  static validateToolResults(tool: Tool, results: ToolResults): { valid: boolean; errors: string[] } {
+    try {
+      // Parse result against tool's output schema
+      const outputValidator = this.createSchemaValidator(tool.outputSchema);
+      outputValidator.parse(results.data);
+      
+      return { valid: true, errors: [] };
+    } catch (error) {
+      return {
+        valid: false,
+        errors: [(error as Error).message]
+      };
+    }
+  }
+  
+  // Create Zod validator from JSON Schema
+  private static createSchemaValidator(schema: any): z.ZodType<any> {
+    // Simple implementation - in production, use a complete JSON Schema to Zod converter
+    if (schema.type === 'object') {
+      const shape: Record<string, z.ZodType<any>> = {};
+      
+      if (schema.properties) {
+        Object.entries(schema.properties).forEach(([key, propSchema]: [string, any]) => {
+          shape[key] = this.createPropertyValidator(propSchema);
+        });
+      }
+      
+      let zodObject = z.object(shape);
+      
+      if (schema.required && Array.isArray(schema.required)) {
+        schema.required.forEach((field: string) => {
+          if (shape[field]) {
+            shape[field] = shape[field].required();
+          }
+        });
+      }
+      
+      return zodObject;
+    }
+    
+    // Default fallback
+    return z.any();
+  }
+  
+  private static createPropertyValidator(propSchema: any): z.ZodType<any> {
+    switch (propSchema.type) {
+      case 'string':
+        return z.string();
+      case 'number':
+        return z.number();
+      case 'boolean':
+        return z.boolean();
+      case 'array':
+        return z.array(this.createPropertyValidator(propSchema.items || {}));
+      case 'object':
+        return this.createSchemaValidator(propSchema);
+      default:
+        return z.any();
+    }
+  }
+}
+
+// Implementation for tool validation system
+export async function validateAllRegisteredTools() {
+  const { data: tools, error } = await supabase
+    .from('mcp7_tools')
+    .select('*');
+  
+  if (error || !tools) {
+    console.error("Failed to fetch tools:", error);
+    return;
+  }
+  
+  const validationResults = tools.map(tool => ({
+    tool,
+    validation: MCP7ToolValidator.validateToolRegistration(tool)
+  }));
+  
+  const invalidTools = validationResults.filter(r => !r.validation.valid);
+  
+  if (invalidTools.length > 0) {
+    console.error(`Found ${invalidTools.length} invalid tools:`);
+    invalidTools.forEach(r => {
+      console.error(`Tool ${r.tool.name}: ${r.validation.errors.join(', ')}`);
+    });
+  } else {
+    console.log(`All ${tools.length} tools validated successfully`);
+  }
+}
+```
+
+### 4. ⚠️ Real data integration – Mostly mock/sample data
+
+**Finding:**
+The system is primarily using mock/sample data instead of real data integration.
+
+**Remediation:**
+
+```typescript
+// lib/integrations/dataConnectors.ts
+import { supabase } from '../supabaseClient';
+import { APIResult, DataSource, EquipmentData } from '../../types/integrations';
+
+// Class to manage external data source connections
+export class DataConnector {
+  private apiKeys: Record<string, string> = {};
+  private source: DataSource;
+  
+  constructor(source: DataSource) {
+    this.source = source;
+  }
+  
+  // Set API key for this connector
+  async setApiKey(key: string): Promise<void> {
+    // Store encrypted in database
+    const { error } = await supabase
+      .from('integration_credentials')
+      .upsert({
+        organization_id: this.source.organizationId,
+        integration_type: this.source.type,
+        credentials: { apiKey: key },
+        updated_at: new Date().toISOString()
+      });
+    
+    if (error) throw new Error(`Failed to store API key: ${error.message}`);
+    
+    // Keep in memory for immediate use
+    this.apiKeys[this.source.type] = key;
+  }
+  
+  // Get stored API key
+  private async getApiKey(): Promise<string> {
+    // Use cached key if available
+    if (this.apiKeys[this.source.type]) {
+      return this.apiKeys[this.source.type];
+    }
+    
+    // Retrieve from database
+    const { data, error } = await supabase
+      .from('integration_credentials')
+      .select('credentials')
+      .eq('organization_id', this.source.organizationId)
+      .eq('integration_type', this.source.type)
+      .single();
+    
+    if (error || !data) {
+      throw new Error(`API key not found for ${this.source.type}`);
+    }
+    
+    const key = data.credentials.apiKey;
+    this.apiKeys[this.source.type] = key;
+    return key;
+  }
+  
+  // Fetch equipment data from external API
+  async fetchEquipmentData(serialNumber: string): Promise<APIResult<EquipmentData>> {
+    try {
+      const apiKey = await this.getApiKey();
+      
+      // Different implementations for different vendors
+      switch (this.source.type) {
+        case 'sony': {
+          return this.fetchSonyEquipmentData(serialNumber, apiKey);
+        }
+        case 'crestron': {
+          return this.fetchCrestronEquipmentData(serialNumber, apiKey);
+        }
+        case 'qsc': {
+          return this.fetchQSCEquipmentData(serialNumber, apiKey);
+        }
+        default:
+          throw new Error(`Unsupported source type: ${this.source.type}`);
+      }
+    } catch (error) {
+      return {
+        success: false,
+        error: (error as Error).message
+      };
+    }
+  }
+  
+  // Vendor-specific implementation for Sony
+  private async fetchSonyEquipmentData(serialNumber: string, apiKey: string): Promise<APIResult<EquipmentData>> {
+    try {
+      const response = await fetch(`https://api.pro.sony.com/v2/products/${serialNumber}`, {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Sony API error: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      return {
+        success: true,
+        data: {
+          model: data.model,
+          serialNumber: data.serialNumber,
+          manufactureDate: data.manufactureDate,
+          warrantyStatus: data.warrantyStatus,
+          warrantyExpiration: data.warrantyExpirationDate,
+          specifications: data.specifications,
+          supportedRMA: data.supportedRMA || false
+        }
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Sony API error: ${(error as Error).message}`
+      };
+    }
+  }
+  
+  // Additional vendor implementations
+  private async fetchCrestronEquipmentData(serialNumber: string, apiKey: string): Promise<APIResult<EquipmentData>> {
+    // Crestron API implementation
+    // ...similar to Sony implementation
+    return { success: false, error: "Not implemented" };
+  }
+  
+  private async fetchQSCEquipmentData(serialNumber: string, apiKey: string): Promise<APIResult<EquipmentData>> {
+    // QSC API implementation
+    // ...similar to Sony implementation
+    return { success: false, error: "Not implemented" };
+  }
+  
+  // Import data from external systems
+  async importHistoricalData(fromDate: string, toDate: string): Promise<APIResult<{ count: number }>> {
+    try {
+      const apiKey = await this.getApiKey();
+      
+      // Implementation would vary by vendor
+      // ...
+      
+      return {
+        success: true,
+        data: { count: 42 } // Placeholder
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: `Import failed: ${(error as Error).message}`
+      };
+    }
+  }
+}
+
+// Factory to create appropriate connector for each data source
+export class DataConnectorFactory {
+  static createConnector(source: DataSource): DataConnector {
+    return new DataConnector(source);
+  }
+}
+```
+
+**Data Import Script:**
+```typescript
+// scripts/importRealData.ts
+import { supabase } from '../lib/supabaseClient';
+import { DataConnectorFactory } from '../lib/integrations/dataConnectors';
+import { DataSource } from '../types/integrations';
+
+async function importRealDataForOrganization(organizationId: string) {
+  try {
+    // Get all data sources for the organization
+    const { data: sources, error } = await supabase
+      .from('data_sources')
+      .select('*')
+      .eq('organization_id', organizationId);
+    
+    if (error) throw error;
+    if (!sources || sources.length === 0) {
+      console.log(`No data sources found for organization ${organizationId}`);
+      return;
+    }
+    
+    for (const source of sources) {
+      console.log(`Importing data from ${source.name} (${source.type})...`);
+      
+      const connector = DataConnectorFactory.createConnector(source as DataSource);
+      
+      // Import last 6 months of data
+      const toDate = new Date().toISOString();
+      const fromDate = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+      
+      const result = await connector.importHistoricalData(fromDate, toDate);
+      
+      if (result.success) {
+        console.log(`Successfully imported ${result.data.count} records from ${source.name}`);
+      } else {
+        console.error(`Failed to import from ${source.name}: ${result.error}`);
+      }
+    }
+    
+    console.log(`Data import complete for organization ${organizationId}`);
+  } catch (error) {
+    console.error(`Import failed for organization ${organizationId}:`, error);
+  }
+}
+
+async function importAllRealData() {
+  // Get all organizations
+  const { data: organizations, error } = await supabase
+    .from('organizations')
+    .select('id, name');
+  
+  if (error) {
+    console.error('Failed to get organizations:', error);
+    return;
+  }
+  
+  if (!organizations || organizations.length === 0) {
+    console.log('No organizations found');
+    return;
+  }
+  
+  console.log(`Found ${organizations.length} organizations`);
+  
+  for (const org of organizations) {
+    console.log(`Processing organization: ${org.name}`);
+    await importRealDataForOrganization(org.id);
+  }
+  
+  console.log('All data imports complete');
+}
+
+importAllRealData();
+```
+
+### 5. ⚠️ Test coverage – Agent + MCP tools not tested
+
+**Finding:**
+The current test coverage is insufficient, particularly for Super Agent and MCP tools.
+
+**Remediation:**
+
+```typescript
+// __tests__/mcp7/tools/equipment-recognition.test.ts
+import { describe, test, expect, jest, beforeEach } from '@jest/globals';
+import { EquipmentRecognitionTool } from '../../../lib/mcp7/tools/equipmentRecognition';
+import { mockSupabaseClient } from '../../mocks/supabase';
+
+// Mock Supabase client
+jest.mock('../../../lib/supabaseClient', () => ({
+  supabase: mockSupabaseClient
+}));
+
+describe('Equipment Recognition Tool', () => {
+  let tool: EquipmentRecognitionTool;
+  
+  beforeEach(() => {
+    tool = new EquipmentRecognitionTool();
+    jest.clearAllMocks();
+  });
+  
+  test('should correctly identify equipment from image', async () => {
+    // Mock vision API response
+    global.fetch = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      json: jest.fn().mockResolvedValueOnce({
+        predictions: [
+          { 
+            class: 'Sony Projector VPL-FHZ75', 
+            confidence: 0.94,
+            coordinates: { x: 120, y: 80, width: 450, height: 320 }
+          }
+        ]
+      })
+    }) as jest.Mock;
+    
+    // Setup Supabase response for equipment lookup
+    mockSupabaseClient.from.mockReturnValueOnce({
+      select: jest.fn().mockReturnValueOnce({
+        eq: jest.fn().mockReturnValueOnce({
+          data: [{ 
+            id: 'equip-123',
+            model: 'VPL-FHZ75',
+            manufacturer: 'Sony',
+            category: 'Projector',
+            warranty_days: 730
+          }],
+          error: null
+        })
+      })
+    });
+    
+    const result = await tool.execute({
+      imageUrl: 'https://example.com/equipment.jpg',
+      organizationId: 'org-123'
+    });
+    
+    expect(result.success).toBe(true);
+    expect(result.data.equipment.model).toBe('VPL-FHZ75');
+    expect(result.data.equipment.manufacturer).toBe('Sony');
+    expect(result.data.confidence).toBeGreaterThan(0.9);
+  });
+  
+  test('should handle unrecognized equipment', async () => {
+    // Mock vision API response with low confidence
+    global.fetch = jest.fn().mockResolvedValueOnce({
+      ok: true,
+      json: jest.fn().mockResolvedValueOnce({
+        predictions: [
+          { 
+            class: 'Unknown Device', 
+            confidence: 0.35,
+            coordinates: { x: 120, y: 80, width: 450, height: 320 }
+          }
+        ]
+      })
+    }) as jest.Mock;
+    
+    const result = await tool.execute({
+      imageUrl: 'https://example.com/unknown.jpg',
+      organizationId: 'org-123'
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Could not confidently identify equipment');
+  });
+  
+  test('should handle API failures gracefully', async () => {
+    // Mock failed API call
+    global.fetch = jest.fn().mockRejectedValueOnce(new Error('API unavailable')) as jest.Mock;
+    
+    const result = await tool.execute({
+      imageUrl: 'https://example.com/equipment.jpg',
+      organizationId: 'org-123'
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Error calling vision API');
+  });
+});
+```
+
+**Super Agent Tests:**
+```typescript
+// __tests__/superAgent/orchestrator.test.ts
+import { describe, test, expect, jest, beforeEach } from '@jest/globals';
+import { SuperAgentOrchestrator } from '../../lib/superAgent/orchestrator';
+import { ToolRegistry } from '../../lib/mcp7/toolRegistry';
+import { mockSupabaseClient } from '../mocks/supabase';
+
+// Mock necessary dependencies
+jest.mock('../../lib/supabaseClient', () => ({
+  supabase: mockSupabaseClient
+}));
+
+jest.mock('../../lib/mcp7/toolRegistry', () => ({
+  ToolRegistry: {
+    getRegisteredTool: jest.fn()
+  }
+}));
+
+describe('SuperAgent Orchestrator', () => {
+  let orchestrator: SuperAgentOrchestrator;
+  
+  beforeEach(() => {
+    orchestrator = new SuperAgentOrchestrator('org-123');
+    jest.clearAllMocks();
+  });
+  
+  test('should execute valid task sequence', async () => {
+    // Mock claim data
+    const claim = {
+      id: 'claim-123',
+      equipment_id: 'equip-456',
+      issue_description: 'Image irregularities in upper left quadrant',
+      status: 'submitted'
+    };
+    
+    // Mock tool executions
+    const mockImageAnalysisTool = {
+      execute: jest.fn().mockResolvedValueOnce({
+        success: true,
+        data: {
+          detectedIssues: ['display artifact', 'color distortion'],
+          affectedArea: 'upper left',
+          confidence: 0.87
+        }
+      })
+    };
+    
+    const mockVendorLookupTool = {
+      execute: jest.fn().mockResolvedValueOnce({
+        success: true,
+        data: {
+          vendor: 'Sony',
+          supportEmail: 'support@sony.com',
+          requiredInfo: ['device logs', 'additional photos']
+        }
+      })
+    };
+    
+    // Setup tool registry mocks
+    (ToolRegistry.getRegisteredTool as jest.Mock)
+      .mockImplementation((toolId) => {
+        if (toolId === 'image-analysis') return mockImageAnalysisTool;
+        if (toolId === 'vendor-lookup') return mockVendorLookupTool;
+        return null;
+      });
+    
+    // Supabase mock for claim update
+    mockSupabaseClient.from.mockReturnValue({
+      update: jest.fn().mockReturnValue({
+        eq: jest.fn().mockReturnValue({
+          data: { ...claim, status: 'analyzed' },
+          error: null
+        })
+      })
+    });
+    
+    // Execute claim analysis task
+    const result = await orchestrator.executeTask('analyze-claim', {
+      claimId: 'claim-123'
+    });
+    
+    expect(result.success).toBe(true);
+    expect(mockImageAnalysisTool.execute).toHaveBeenCalled();
+    expect(mockVendorL

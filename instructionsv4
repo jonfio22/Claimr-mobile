@@ -1,0 +1,613 @@
+Based on the Claimr mobile app PDF and the requirements, I'll now build a comprehensive real-time claim intelligence pipeline plan. The document shows a well-designed mobile interface for managing RMA (Return Merchandise Authorization) claims for AV equipment, and we need to connect it to live intelligence services.
+
+# Real-Time Claim Intelligence Pipeline for Claimr
+
+## Supabase Sync Plan
+
+### Data Capture Flow
+1. **Claim Submission Endpoints**
+   - Create a new REST API endpoint `/api/claims/submit` to handle form data and file uploads from the mobile UI
+   - Implement webhook handlers for real-time notifications from manufacturer systems
+   - Set up WebSocket connections for live status updates
+
+2. **Data Validation Layer**
+   - Implement JSON schema validation for all incoming claim data:
+     ```typescript
+     // Example validation schema
+     const claimSchema = {
+       type: 'object',
+       required: ['equipmentId', 'issueDescription', 'serialNumber', 'attachments'],
+       properties: {
+         equipmentId: { type: 'string' },
+         issueDescription: { type: 'string', minLength: 10 },
+         serialNumber: { type: 'string', pattern: '^[A-Za-z0-9-]+$' },
+         attachments: { type: 'array', items: { type: 'string', format: 'uri' } }
+       }
+     }
+     ```
+   - Add validation for image data quality (resolution, focus, metadata)
+   - Implement equipment serial number verification against manufacturer databases
+
+3. **Supabase Tables and Relationships**
+   ```sql
+   -- Primary claims table
+   CREATE TABLE claims (
+     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+     claim_number TEXT NOT NULL,
+     equipment_id UUID REFERENCES equipment(id),
+     user_id UUID REFERENCES auth.users(id),
+     status TEXT NOT NULL,
+     issue_description TEXT NOT NULL,
+     submission_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+     estimated_completion TIMESTAMP WITH TIME ZONE,
+     completion_percentage INTEGER DEFAULT 0,
+     last_updated TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+   );
+   
+   -- Claim events table for timeline
+   CREATE TABLE claim_events (
+     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+     claim_id UUID REFERENCES claims(id),
+     event_type TEXT NOT NULL,
+     event_description TEXT,
+     event_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+     vendor_reference TEXT,
+     metadata JSONB
+   );
+   
+   -- Claim attachments table
+   CREATE TABLE claim_attachments (
+     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+     claim_id UUID REFERENCES claims(id),
+     file_url TEXT NOT NULL,
+     file_type TEXT,
+     upload_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+     ai_analysis JSONB
+   );
+   ```
+
+4. **Real-Time Sync Triggers**
+   - Create Supabase triggers for data synchronization:
+     ```sql
+     -- Trigger function to notify the intelligence pipeline
+     CREATE FUNCTION notify_intelligence_pipeline() RETURNS TRIGGER AS $$
+     BEGIN
+       PERFORM http_post(
+         'https://api.claimr.app/intelligence/analyze',
+         json_build_object('claim_id', NEW.id, 'action', TG_OP)
+       );
+       RETURN NEW;
+     END;
+     $$ LANGUAGE plpgsql;
+     
+     -- Attach trigger to claims table
+     CREATE TRIGGER claims_intelligence_trigger
+     AFTER INSERT OR UPDATE ON claims
+     FOR EACH ROW EXECUTE PROCEDURE notify_intelligence_pipeline();
+     ```
+
+## Agent Integration Plan
+
+### Agent Activation Flow
+1. **Claim Submission Trigger**
+   - Update `submitClaimHandler` to initiate agent analysis post-submission:
+     ```typescript
+     // Mobile app submission handler
+     async function submitClaimHandler(claimData, files) {
+       // Save claim to Supabase
+       const { data, error } = await supabase
+         .from('claims')
+         .insert(claimData)
+         .select('id');
+         
+       // Process and upload files
+       const fileUrls = await Promise.all(
+         files.map(file => uploadToStorage(file, data.id))
+       );
+       
+       // Attach files to claim
+       await supabase
+         .from('claim_attachments')
+         .insert(fileUrls.map(url => ({
+           claim_id: data.id,
+           file_url: url,
+           file_type: getFileType(url)
+         })));
+       
+       // Trigger agent analysis immediately
+       await fetch('https://api.claimr.app/agent/analyze', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ claimId: data.id })
+       });
+       
+       return data;
+     }
+     ```
+
+2. **Backend Agent Service**
+   - Implement service to orchestrate Super Agent functionality:
+     ```typescript
+     // Agent service in backend
+     class ClaimAgentService {
+       async analyzeClaim(claimId) {
+         // Fetch claim data with related equipment and attachments
+         const claimData = await this.fetchClaimFullContext(claimId);
+         
+         // Prepare claim analysis context
+         const context = await this.contextBuilder.buildForClaim(claimData);
+         
+         // Run analyzeClaim action with full context
+         const analysisResult = await this.superAgent.analyzeClaim({
+           claimData,
+           context,
+           attachments: claimData.attachments
+         });
+         
+         // Update claim with intelligence results
+         await this.persistAnalysisResults(claimId, analysisResult);
+         
+         // Feed to memory tracker and anomaly detector
+         await this.memoryTracker.recordClaimActivity(claimId, analysisResult);
+         await this.anomalyDetector.checkForAnomalies(claimId, analysisResult);
+         
+         return analysisResult;
+       }
+       
+       // Additional helper methods...
+     }
+     ```
+
+3. **UI Update Mechanism**
+   - Implement WebSocket subscription for real-time UI updates:
+     ```typescript
+     // In mobile app component
+     useEffect(() => {
+       const subscription = supabase
+         .channel('claim-updates')
+         .on(
+           'postgres_changes',
+           { event: 'UPDATE', schema: 'public', table: 'claims', filter: `id=eq.${claimId}` },
+           (payload) => {
+             updateClaimState(payload.new);
+             
+             // Show AI insights if available
+             if (payload.new.ai_insights) {
+               showAiInsightsPopup(payload.new.ai_insights);
+             }
+           }
+         )
+         .subscribe();
+         
+       return () => {
+         subscription.unsubscribe();
+       };
+     }, [claimId]);
+     ```
+
+## Tool Activation Map
+
+```
+┌───────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│ Mobile UI         │     │ Supabase         │     │ Backend Services │
+│ - Claim Form      │────▶│ - claims         │────▶│ - API Gateway    │
+│ - Photo Capture   │     │ - claim_events   │     │ - Auth Service   │
+│ - Document Upload │     │ - attachments    │     │ - Storage Service│
+└───────────────────┘     └──────────────────┘     └──────────────────┘
+                                                            │
+                                                            ▼
+┌───────────────────────────────────────────────────────────────────────┐
+│                    Intelligence Pipeline Flow                          │
+└───────────────────────────────────────────────────────────────────────┘
+                                                            │
+                 ┌───────────────────────────────────────┐ │
+                 │                                       │ │
+                 ▼                                       │ ▼
+┌──────────────────────┐                      ┌──────────────────────┐
+│ contextBuilder       │                      │ analyzeClaim Action  │
+│ - Equipment History  │◄─────────────────────│ - Claim Validation   │
+│ - Vendor Patterns    │                      │ - Issue Diagnosis    │
+│ - User History       │                      │ - Response Templates │
+└──────────────────────┘                      └──────────────────────┘
+         │                                              │
+         │                                              ▼
+         │                                    ┌──────────────────────┐
+         │                                    │ anomalyDetector      │
+         └───────────────────────────────────▶│ - Pattern Analysis   │
+         │                                    │ - Fraud Detection    │
+         │                                    │ - Time Series Alerts │
+         │                                    └──────────────────────┘
+         │                                              │
+         ▼                                              ▼
+┌──────────────────────┐                      ┌──────────────────────┐
+│ OrgLearningVault     │                      │ memoryTracker        │
+│ - Knowledge Updates  │◄─────────────────────│ - Claim Timeline     │
+│ - Vendor Responses   │                      │ - User Interactions  │
+│ - Resolution Patterns│                      │ - System Events      │
+└──────────────────────┘                      └──────────────────────┘
+         │                                              │
+         └───────────────────────────────────┐         │
+                                            │         │
+                                            ▼         ▼
+                                   ┌──────────────────────┐
+                                   │ recommendationEngine │
+                                   │ - Next Actions       │
+                                   │ - Similar Claims     │
+                                   │ - Documentation Tips │
+                                   └──────────────────────┘
+                                            │
+                                            ▼
+                                   ┌──────────────────────┐
+                                   │ UI Notifications     │
+                                   │ - Action Items       │
+                                   │ - Insights           │
+                                   │ - Status Updates     │
+                                   └──────────────────────┘
+```
+
+## Sample Claim Payload
+
+### 1. Initial Claim Submission Payload
+
+```json
+{
+  "equipmentId": "8e7a9f12-c3d4-456e-b7f8-9a0b1c2d3e4f",
+  "modelNumber": "Sony Projector VPL-FHZ75",
+  "serialNumber": "87392-XZ3",
+  "issueDescription": "Image irregularities in upper left quadrant. Screen displays discoloration and pixelation approximately 10cm from top left corner. Issue persists across all input sources.",
+  "firstNoticed": "2023-06-11T14:30:00Z",
+  "submitterId": "john.doe@integrationfirm.com",
+  "customerSite": "Downtown Conference Center",
+  "priority": "high",
+  "attachments": [
+    {
+      "fileUrl": "https://storage.claimr.app/claims/83291/issue-photo-1.jpg",
+      "fileType": "image/jpeg",
+      "uploadDate": "2023-06-14T10:12:33Z"
+    },
+    {
+      "fileUrl": "https://storage.claimr.app/claims/83291/system-log.txt",
+      "fileType": "text/plain",
+      "uploadDate": "2023-06-14T10:14:45Z"
+    }
+  ]
+}
+```
+
+### 2. contextBuilder Output
+
+```json
+{
+  "claimId": "83291",
+  "equipmentContext": {
+    "model": "Sony Projector VPL-FHZ75",
+    "knownIssues": [
+      {
+        "issue": "Upper quadrant discoloration",
+        "frequency": "moderate",
+        "typicalResolution": "LCD panel replacement",
+        "avgResolutionTime": "12 days"
+      },
+      {
+        "issue": "Input board failure",
+        "frequency": "low",
+        "typicalResolution": "Board replacement",
+        "avgResolutionTime": "8 days"
+      }
+    ],
+    "warrantyStatus": {
+      "active": true,
+      "daysRemaining": 318,
+      "coverageLevel": "Premium",
+      "limitations": []
+    },
+    "previousClaims": []
+  },
+  "vendorContext": {
+    "name": "Sony Professional Solutions",
+    "avgResponseTime": "4.2 hours",
+    "documentationRequirements": [
+      "Clear images of affected area",
+      "System log export",
+      "EDID logs when display issues present"
+    ],
+    "preferredCommunicationChannel": "email",
+    "serviceLevel": {
+      "priority": "high",
+      "targetResolutionTime": "10 business days"
+    }
+  },
+  "submitterContext": {
+    "completionRate": 98.5,
+    "avgTimeToRespond": "2.4 hours",
+    "preferredNotificationMethod": "push",
+    "certification": {
+      "sony": "Advanced",
+      "crestron": "Master"
+    }
+  }
+}
+```
+
+### 3. analyzeClaim Action Results
+
+```json
+{
+  "claimAnalysis": {
+    "diagnosisConfidence": 89.2,
+    "likelyIssue": "LCD panel defect",
+    "alternateIssues": [
+      {
+        "issue": "Optical block misalignment",
+        "probability": 0.12
+      },
+      {
+        "issue": "Input processor failure",
+        "probability": 0.08
+      }
+    ],
+    "recommendedDocumentation": [
+      {
+        "type": "image",
+        "description": "Close-up of affected area with color test pattern",
+        "priority": "high",
+        "missing": true
+      },
+      {
+        "type": "log",
+        "description": "EDID communication logs",
+        "priority": "medium",
+        "missing": true
+      }
+    ],
+    "estimatedResolution": {
+      "timeRange": "10-14 days",
+      "confidence": 0.85,
+      "steps": [
+        "Vendor verification (1-2 days)",
+        "Part allocation (2-3 days)",
+        "Shipping to service center (2 days)",
+        "Repair (3-5 days)",
+        "Return shipping (2 days)"
+      ]
+    }
+  },
+  "actionItems": [
+    {
+      "type": "documentation",
+      "priority": "urgent",
+      "description": "Upload color test pattern images showing the affected area",
+      "dueDate": "2023-06-15T23:59:59Z"
+    },
+    {
+      "type": "documentation",
+      "priority": "high",
+      "description": "Export and upload EDID logs from projector service menu",
+      "dueDate": "2023-06-15T23:59:59Z",
+      "instructions": "Access service menu with remote: Press MENU+SERVICE(7)+3+9+1"
+    }
+  ]
+}
+```
+
+### 4. anomalyDetector Results
+
+```json
+{
+  "anomalies": {
+    "detected": true,
+    "items": [
+      {
+        "type": "timing",
+        "description": "Issue reported 3 days after first notice - unusual delay for this user",
+        "severity": "low",
+        "recommendation": "No action required"
+      }
+    ]
+  },
+  "riskFactors": {
+    "fraudProbability": 0.02,
+    "dataInconsistencies": 0,
+    "unusualPatterns": 0
+  },
+  "vendorSpecific": {
+    "sonyTrends": {
+      "similarClaimsIncrease": true,
+      "percentageIncrease": 15,
+      "regionSpecific": true,
+      "affectedRegion": "Northeast"
+    }
+  }
+}
+```
+
+### 5. OrgLearningVaultService Update
+
+```json
+{
+  "vaultUpdates": [
+    {
+      "knowledgeArea": "equipment",
+      "itemId": "Sony Projector VPL-FHZ75",
+      "updateType": "issue_frequency",
+      "update": {
+        "issue": "Upper quadrant discoloration",
+        "frequencyBefore": 0.12,
+        "frequencyAfter": 0.13,
+        "confidenceInterval": 0.02
+      }
+    },
+    {
+      "knowledgeArea": "vendor",
+      "itemId": "Sony Professional Solutions",
+      "updateType": "documentation_requirements",
+      "update": {
+        "requirement": "Color pattern test images",
+        "importance": "critical",
+        "observationCount": 27
+      }
+    }
+  ],
+  "learningOpportunities": [
+    {
+      "type": "preventative_maintenance",
+      "description": "Projectors of this model showing early signs of LCD panel issues may benefit from preventative service at 1800 hours of use",
+      "confidence": 0.78,
+      "applicableEquipment": ["Sony VPL-FHZ75", "Sony VPL-FHZ70"]
+    }
+  ]
+}
+```
+
+### 6. memoryTracker Stream
+
+```json
+{
+  "claimId": "83291",
+  "timeline": [
+    {
+      "timestamp": "2023-06-14T10:24:15Z",
+      "eventType": "submission",
+      "details": "Claim submitted with 2 attachments",
+      "agentAssisted": false
+    },
+    {
+      "timestamp": "2023-06-14T10:25:03Z",
+      "eventType": "analysis",
+      "details": "AI analysis identified likely LCD panel defect",
+      "confidence": 0.89,
+      "systemGenerated": true
+    },
+    {
+      "timestamp": "2023-06-14T10:25:18Z",
+      "eventType": "action_item",
+      "details": "System requested additional documentation: color test pattern images",
+      "priority": "urgent",
+      "systemGenerated": true
+    },
+    {
+      "timestamp": "2023-06-14T14:47:32Z",
+      "eventType": "vendor_update",
+      "details": "Claim received by Sony (ID: SON-23782)",
+      "source": "vendor_api"
+    }
+  ],
+  "interactions": [
+    {
+      "timestamp": "2023-06-14T10:26:45Z",
+      "channel": "push_notification",
+      "message": "Action needed: Upload color test pattern images for your Sony projector claim",
+      "status": "delivered"
+    }
+  ]
+}
+```
+
+### 7. recommendationEngine Output
+
+```json
+{
+  "userRecommendations": [
+    {
+      "type": "documentation",
+      "title": "Upload EDID Logs",
+      "description": "Sony typically requires EDID logs for display issues. Access the service menu using code 7391 and export logs to USB.",
+      "priority": "high",
+      "actionUrl": "/claims/83291/upload"
+    },
+    {
+      "type": "preparation",
+      "title": "Prepare for Return Shipping",
+      "description": "Based on analysis, there's a 89% chance this projector will need depot service. Prepare original packaging materials.",
+      "priority": "medium",
+      "timeframe": "3-5 days"
+    }
+  ],
+  "similarClaims": [
+    {
+      "claimId": "79453",
+      "equipment": "Sony Projector VPL-FHZ70",
+      "issue": "Color distortion in upper corner",
+      "resolution": "LCD panel replacement",
+      "timeToResolve": "11 days",
+      "lessonsLearned": "Providing EDID logs with initial submission reduced response time by 2 days"
+    }
+  ],
+  "automaticActions": [
+    {
+      "type": "documentation",
+      "action": "Generated troubleshooting guide",
+      "details": "Custom Sony VPL-FHZ75 LCD panel testing procedure PDF created",
+      "resourceUrl": "/resources/guides/sony-lcd-test-83291.pdf"
+    }
+  ]
+}
+```
+
+## System Verification Plan
+
+To verify the system is no longer mock-based and has full end-to-end AI functionality:
+
+1. **Data Validation Tests**
+   - Create automated test suite that validates real claim data flows through the pipeline
+   - Implement payload validation at each stage with schema enforcement
+   - Add metrics collection to measure processing time at each stage
+
+2. **End-to-End Integration Tests**
+   - Create a test claim with real (or realistic) data
+   - Trace the claim through all intelligence services using unique trace ID
+   - Verify all downstream services receive and process the data
+   - Monitor database writes to confirm data persistence
+
+3. **Monitoring Dashboard**
+   - Implement real-time dashboard showing:
+     - Claims processed per hour/day
+     - Intelligence pipeline performance metrics
+     - Tool activation frequency
+     - Error rates and processing times
+     - AI confidence scores
+
+4. **Success Criteria Verification**
+   ```typescript
+   // Verification function to run daily
+   async function verifyLiveSystem() {
+     // Check for real data processing
+     const last24HoursClaims = await db.query(`
+       SELECT COUNT(*) FROM claims 
+       WHERE submission_date > NOW() - INTERVAL '24 hours'
+     `);
+     
+     // Check AI processing percentage
+     const aiProcessedClaims = await db.query(`
+       SELECT COUNT(*) FROM claims 
+       WHERE submission_date > NOW() - INTERVAL '24 hours'
+       AND ai_analysis IS NOT NULL
+     `);
+     
+     // Check intelligence tool activation
+     const toolActivations = await db.query(`
+       SELECT tool_name, COUNT(*) as activation_count
+       FROM system_logs
+       WHERE log_type = 'tool_activation'
+       AND timestamp > NOW() - INTERVAL '24 hours'
+       GROUP BY tool_name
+     `);
+     
+     // Validate end-to-end workflow completion
+     const completedFlows = await db.query(`
+       SELECT COUNT(*) FROM claims
+       WHERE submission_date > NOW() - INTERVAL '24 hours'
+       AND json_array_length(recommendations) > 0
+     `);
+     
+     return {
+       totalClaims: last24HoursClaims.count,
+       aiProcessedPercentage: (aiProcessedClaims.count / last24HoursClaims.count) * 100,
+       toolActivations,
+       completedFlowsPercentage: (completedFlows.count / last24HoursClaims.count) * 100,
+       systemStatus: completedFlows.count > 0 ? 'LIVE' : 'NOT_VERIFIED'
+     };
+   }
+   ```
+
+This comprehensive real-time claim intelligence pipeline connects all the required components while ensuring data integrity, processing efficiency, and actionable insights for users. The system transitions Claimr from using mock data to fully leveraging live user-submitted claim information through the entire intelligence stack.

@@ -1,0 +1,947 @@
+Now I have a better understanding of the Claimr mobile app interface and functionality. Let me analyze the task requirements and design the Smart Claim Blueprint Generator for improving the claim submission process.
+
+# Blueprint Agent Architecture
+
+## Overview
+
+The Smart Claim Blueprint Generator will operate as a pre-submission intelligence layer that evaluates claim quality and provides recommendations before the user finalizes a claim. This proactive approach will significantly improve claim quality and streamline the RMA process.
+
+```mermaid
+graph TD
+    A[User Initiates Claim] --> B[Data Collection]
+    B --> C[Pre-Submission Trigger]
+    C --> D[Blueprint Agent]
+    D --> E1[memoryTracker]
+    D --> E2[anomalyDetector]
+    D --> E3[contextBuilder]
+    D --> E4[orgLearningVault]
+    D --> E5[recommendationEngine]
+    E1 --> F[Blueprint Generation]
+    E2 --> F
+    E3 --> F
+    E4 --> F
+    E5 --> F
+    F --> G[Blueprint Storage]
+    F --> H[UI Feedback]
+    H --> I[User Completes/Enhances Claim]
+    I --> J[Final Submission]
+    J --> K[Vendor Form Auto-fill]
+```
+
+## Core Components
+
+1. **Pre-Submission Trigger**
+   - Activates when user has entered initial claim details but before finalization
+   - Threshold: At least one photo + basic issue description entered
+
+2. **MCP7 Integration Points**
+   - Connects to existing intelligence layers
+   - Uses contextBuilder to analyze equipment-specific requirements
+   - Leverages orgLearningVault for historical claim patterns
+   - Utilizes anomalyDetector to identify missing critical information
+   - Integrates with recommendationEngine for suggesting improvements
+
+3. **Blueprint Generator Core**
+   - Evaluates completeness, accuracy, and quality
+   - Generates structured recommendation object
+   - Calculates confidence score (0-100%)
+   - Identifies claim enhancement opportunities
+
+4. **Real-time UI Integration**
+   - Returns blueprint via API to mobile frontend
+   - Displays visual checklist and improvement suggestions
+   - Updates dynamically as user enhances claim
+
+# New Supabase Table: claim_blueprints
+
+```sql
+CREATE TABLE claim_blueprints (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  claim_id UUID REFERENCES claims(id),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  
+  -- Blueprint Core Data
+  recommended_title TEXT,
+  issue_diagnosis JSONB,
+  confidence_score INTEGER,
+  
+  -- Enhancement Recommendations
+  suggested_attachments JSONB,
+  missing_data JSONB,
+  risk_factors JSONB,
+  
+  -- Vendor Requirements
+  vendor_id UUID REFERENCES vendors(id),
+  vendor_specific_requirements JSONB,
+  
+  -- Auto-fill Data
+  form_mapping JSONB,
+  
+  -- Metadata
+  status TEXT DEFAULT 'active',
+  version INTEGER DEFAULT 1,
+  
+  -- AI Processing Metadata
+  processing_time FLOAT,
+  tools_used TEXT[]
+);
+
+-- Indexes for performance
+CREATE INDEX idx_claim_blueprints_claim_id ON claim_blueprints(claim_id);
+CREATE INDEX idx_claim_blueprints_vendor_id ON claim_blueprints(vendor_id);
+CREATE INDEX idx_claim_blueprints_confidence ON claim_blueprints(confidence_score);
+```
+
+## Sample Blueprint JSON Structure
+
+```json
+{
+  "recommended_title": "Sony VPL-FHZ75 Image Distortion - Upper Left Quadrant",
+  "issue_diagnosis": {
+    "primary_category": "Display",
+    "specific_issue": "LCD Panel Failure",
+    "confidence": 87,
+    "alternative_diagnoses": [
+      {"issue": "Optical Block Misalignment", "confidence": 43},
+      {"issue": "Lens Damage", "confidence": 12}
+    ]
+  },
+  "confidence_score": 72,
+  "suggested_attachments": [
+    {
+      "type": "log",
+      "name": "EDID Logs",
+      "reason": "Sony requires EDID logs for all display issues",
+      "priority": "critical"
+    },
+    {
+      "type": "photo",
+      "name": "Close-up of Affected Area",
+      "reason": "Evidence of pixel damage pattern",
+      "priority": "high"
+    },
+    {
+      "type": "photo",
+      "name": "Full Projection Test Pattern",
+      "reason": "Shows extent of issue across entire display",
+      "priority": "medium"
+    }
+  ],
+  "missing_data": [
+    {
+      "field": "Hours of Use",
+      "importance": "high",
+      "reason": "Required for warranty validation"
+    },
+    {
+      "field": "Firmware Version",
+      "importance": "medium",
+      "reason": "Helps rule out software issues"
+    }
+  ],
+  "risk_factors": [
+    {
+      "type": "rejection_risk",
+      "reason": "Missing critical logs",
+      "severity": "high"
+    },
+    {
+      "type": "delay_risk",
+      "reason": "Incomplete diagnostic information",
+      "severity": "medium"
+    }
+  ],
+  "vendor_specific_requirements": {
+    "vendor_id": "sony_professional",
+    "required_fields": ["hours_of_use", "firmware_version", "edid_logs"],
+    "optional_fields": ["installation_date", "signal_source"]
+  },
+  "form_mapping": {
+    "sony_rma_form": {
+      "issue_type": "display_irregularity",
+      "section_3_field_12": "{{claim.description}}",
+      "section_5_field_2": "{{blueprint.issue_diagnosis.primary_category}}"
+    }
+  }
+}
+```
+
+# Blueprint Generation Logic (MCP tools used)
+
+## Step 1: Initial Context Gathering
+- **contextBuilder**: Analyzes the claim data and extracts key information about the equipment, issue type, and reported symptoms
+- **Inputs**: Equipment model, photos, issue description
+- **Outputs**: Structured context object with identified entities, issue categories, and technical parameters
+
+```javascript
+// Pseudocode for contextBuilder integration
+const claimContext = await MCP.contextBuilder.analyze({
+  equipment: claim.equipment,
+  description: claim.description,
+  photos: claim.attachments.filter(a => a.type === 'photo'),
+  metadata: claim.metadata
+});
+```
+
+## Step 2: Historical Pattern Recognition
+- **orgLearningVault**: Retrieves historical patterns from previous claims for similar equipment and issues
+- **Inputs**: Equipment model, issue category
+- **Outputs**: Success patterns, common rejection reasons, typical requirements
+
+```javascript
+// Pseudocode for orgLearningVault integration
+const historicalPatterns = await MCP.orgLearningVault.query({
+  equipmentModel: claim.equipment.model,
+  vendor: claim.equipment.manufacturer,
+  issueCategories: claimContext.identifiedIssueCategories,
+  limit: 20
+});
+```
+
+## Step 3: Anomaly Detection
+- **anomalyDetector**: Identifies missing or unusual information compared to successful claims
+- **Inputs**: Current claim data, historical pattern data
+- **Outputs**: Anomalies, missing critical fields, unusual patterns
+
+```javascript
+// Pseudocode for anomalyDetector integration
+const anomalies = await MCP.anomalyDetector.analyze({
+  currentClaim: claim,
+  context: claimContext,
+  historicalPatterns: historicalPatterns,
+  requiredFields: vendorRequirements[claim.equipment.manufacturer]
+});
+```
+
+## Step 4: Recommendation Generation
+- **recommendationEngine**: Generates actionable recommendations to improve claim quality
+- **Inputs**: Anomalies, context, vendor requirements
+- **Outputs**: Structured recommendations for improving claim
+
+```javascript
+// Pseudocode for recommendationEngine integration
+const recommendations = await MCP.recommendationEngine.generate({
+  anomalies: anomalies,
+  context: claimContext,
+  historicalSuccess: historicalPatterns.successFactors,
+  vendorRequirements: vendorRequirements[claim.equipment.manufacturer]
+});
+```
+
+## Step 5: Confidence Scoring
+- Combines multiple factors to generate an overall confidence score
+- Factors include: completeness, evidence quality, historical match, vendor requirement alignment
+- Scale: 0-100%, with color coding (red <50%, yellow 50-75%, green >75%)
+
+```javascript
+// Pseudocode for confidence scoring
+function calculateConfidenceScore(claim, blueprint) {
+  const weights = {
+    completeness: 0.3,
+    evidenceQuality: 0.25,
+    historicalAlignment: 0.2,
+    vendorRequirementMatch: 0.25
+  };
+  
+  const scores = {
+    completeness: calculateCompleteness(claim, blueprint.missing_data),
+    evidenceQuality: assessEvidenceQuality(claim.attachments),
+    historicalAlignment: compareToHistoricalSuccess(claim, blueprint.historical_patterns),
+    vendorRequirementMatch: checkVendorRequirements(claim, blueprint.vendor_specific_requirements)
+  };
+  
+  return Object.keys(weights).reduce((total, key) => {
+    return total + (scores[key] * weights[key]);
+  }, 0);
+}
+```
+
+## Step 6: Blueprint Assembly
+- Combines all analysis into a cohesive blueprint object
+- Structures data for both database storage and UI rendering
+- Includes all recommendation categories, confidence score, and auto-fill mapping
+
+# API Endpoint: /api/agent/blueprint
+
+## Request Format
+
+```json
+POST /api/agent/blueprint
+{
+  "claim_id": "uuid-of-draft-claim",
+  "equipment": {
+    "id": "equipment-uuid",
+    "model": "VPL-FHZ75",
+    "manufacturer": "Sony",
+    "category": "Projector",
+    "serial": "87392-XZ3"
+  },
+  "description": "Image irregularities in upper left quadrant",
+  "attachments": [
+    {
+      "id": "attachment-uuid",
+      "type": "photo",
+      "url": "https://storage.claimr.app/uploads/claim123/image1.jpg",
+      "metadata": {
+        "width": 1920,
+        "height": 1080,
+        "timestamp": "2023-06-14T10:24:00Z"
+      }
+    }
+  ],
+  "draft_metadata": {
+    "created_at": "2023-06-14T10:20:00Z",
+    "last_modified": "2023-06-14T10:22:30Z",
+    "completion_percentage": 40
+  }
+}
+```
+
+## Response Format
+
+```json
+{
+  "success": true,
+  "blueprint_id": "blueprint-uuid",
+  "confidence_score": 72,
+  "recommended_title": "Sony VPL-FHZ75 Image Distortion - Upper Left Quadrant",
+  "issue_diagnosis": {
+    "primary_category": "Display",
+    "specific_issue": "LCD Panel Failure",
+    "confidence": 87,
+    "details": "The pattern of distortion is consistent with LCD panel damage."
+  },
+  "checklist": {
+    "completed": [
+      {"id": "basic_info", "name": "Basic Information", "score": 100},
+      {"id": "initial_photo", "name": "Initial Photo", "score": 80}
+    ],
+    "incomplete": [
+      {
+        "id": "additional_photos",
+        "name": "Additional Photos",
+        "score": 30,
+        "recommendation": "Add close-up of affected area with test pattern",
+        "importance": "high"
+      },
+      {
+        "id": "logs",
+        "name": "Diagnostic Logs",
+        "score": 0,
+        "recommendation": "Add EDID logs from projector",
+        "importance": "critical"
+      },
+      {
+        "id": "usage_data",
+        "name": "Usage Data",
+        "score": 0,
+        "recommendation": "Add hours of use information",
+        "importance": "medium"
+      }
+    ]
+  },
+  "risk_assessment": {
+    "overall_risk": "high",
+    "factors": [
+      {
+        "type": "rejection_risk",
+        "severity": "high",
+        "reason": "Missing EDID logs required by Sony"
+      },
+      {
+        "type": "delay_risk",
+        "severity": "medium",
+        "reason": "Incomplete diagnostic information"
+      }
+    ]
+  },
+  "ui_elements": {
+    "progress_bar": {
+      "value": 72,
+      "color": "yellow",
+      "label": "Claim Readiness: 72%"
+    },
+    "critical_items": 1,
+    "important_items": 2,
+    "enhancement_items": 2
+  }
+}
+```
+
+## Implementation Details
+
+```javascript
+// Blueprint API handler
+async function handleBlueprintRequest(req, res) {
+  try {
+    // 1. Extract claim data from request
+    const { claim_id, equipment, description, attachments, draft_metadata } = req.body;
+    
+    // 2. Initialize MCP7 session
+    const mcpSession = await MCP.createSession({
+      context: 'claim_blueprint',
+      claim_id,
+      user_id: req.user.id,
+      tools: ['contextBuilder', 'orgLearningVault', 'anomalyDetector', 'recommendationEngine']
+    });
+    
+    // 3. Generate blueprint
+    const blueprint = await generateBlueprint(mcpSession, {
+      equipment,
+      description,
+      attachments,
+      draft_metadata
+    });
+    
+    // 4. Save blueprint to database
+    const savedBlueprint = await supabase
+      .from('claim_blueprints')
+      .insert({
+        claim_id,
+        recommended_title: blueprint.recommended_title,
+        issue_diagnosis: blueprint.issue_diagnosis,
+        confidence_score: blueprint.confidence_score,
+        suggested_attachments: blueprint.suggested_attachments,
+        missing_data: blueprint.missing_data,
+        risk_factors: blueprint.risk_factors,
+        vendor_id: equipment.manufacturer_id,
+        vendor_specific_requirements: blueprint.vendor_specific_requirements,
+        form_mapping: blueprint.form_mapping,
+        tools_used: mcpSession.tools_used,
+        processing_time: mcpSession.processing_time
+      })
+      .select()
+      .single();
+    
+    // 5. Format response for UI
+    const response = formatBlueprintForUI(savedBlueprint);
+    
+    // 6. Return response
+    return res.status(200).json({
+      success: true,
+      blueprint_id: savedBlueprint.id,
+      ...response
+    });
+  } catch (error) {
+    console.error('Blueprint generation error:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to generate claim blueprint',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+}
+```
+
+# Frontend UX Panel + Visual Checklist
+
+## Blueprint Preview Panel
+
+The Blueprint Preview Panel will appear after the user has entered basic claim information but before final submission. It provides a visual summary of the claim's readiness and suggestions for improvement.
+
+### Design Implementation
+
+```jsx
+// React Native component for Blueprint Preview
+const BlueprintPreview = ({ blueprint, onEnhanceClaim, onSubmitAnyway }) => {
+  const { confidence_score, checklist, risk_assessment } = blueprint;
+  
+  // Determine progress color based on confidence score
+  const getProgressColor = (score) => {
+    if (score < 50) return '#E53935'; // Red
+    if (score < 75) return '#FFB300'; // Amber
+    return '#43A047'; // Green
+  };
+  
+  return (
+    <View style={styles.container}>
+      <Text style={styles.title}>Claim Blueprint</Text>
+      
+      {/* Confidence Meter */}
+      <View style={styles.confidenceMeter}>
+        <Text style={styles.confidenceLabel}>Claim Readiness</Text>
+        <Progress.Bar 
+          progress={confidence_score / 100} 
+          width={null} 
+          height={12}
+          color={getProgressColor(confidence_score)}
+        />
+        <Text style={styles.confidenceValue}>{confidence_score}%</Text>
+      </View>
+      
+      {/* Issue Diagnosis */}
+      <View style={styles.diagnosisContainer}>
+        <Text style={styles.sectionTitle}>Issue Diagnosis</Text>
+        <Text style={styles.diagnosisText}>
+          {blueprint.issue_diagnosis.primary_category}: {blueprint.issue_diagnosis.specific_issue}
+        </Text>
+        <Text style={styles.diagnosisDetails}>
+          {blueprint.issue_diagnosis.details}
+        </Text>
+      </View>
+      
+      {/* Checklist */}
+      <View style={styles.checklistContainer}>
+        <Text style={styles.sectionTitle}>Claim Checklist</Text>
+        
+        {/* Completed Items */}
+        {checklist.completed.map(item => (
+          <View key={item.id} style={styles.checklistItem}>
+            <Icon name="check-circle" size={24} color="#43A047" />
+            <Text style={styles.checklistText}>{item.name}</Text>
+          </View>
+        ))}
+        
+        {/* Incomplete Critical Items */}
+        {checklist.incomplete
+          .filter(item => item.importance === 'critical')
+          .map(item => (
+            <View key={item.id} style={styles.checklistItem}>
+              <Icon name="error" size={24} color="#E53935" />
+              <View style={styles.checklistContent}>
+                <Text style={styles.checklistText}>{item.name}</Text>
+                <Text style={styles.recommendationText}>{item.recommendation}</Text>
+              </View>
+              <TouchableOpacity 
+                style={styles.actionButton}
+                onPress={() => onEnhanceClaim(item.id, item.recommendation)}
+              >
+                <Text style={styles.actionButtonText}>Fix</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+          
+        {/* Incomplete Important Items */}
+        {checklist.incomplete
+          .filter(item => item.importance === 'high' || item.importance === 'medium')
+          .map(item => (
+            <View key={item.id} style={styles.checklistItem}>
+              <Icon 
+                name="warning" 
+                size={24} 
+                color={item.importance === 'high' ? '#FFB300' : '#FFC107'} 
+              />
+              <View style={styles.checklistContent}>
+                <Text style={styles.checklistText}>{item.name}</Text>
+                <Text style={styles.recommendationText}>{item.recommendation}</Text>
+              </View>
+              <TouchableOpacity 
+                style={styles.actionButton}
+                onPress={() => onEnhanceClaim(item.id, item.recommendation)}
+              >
+                <Text style={styles.actionButtonText}>Fix</Text>
+              </TouchableOpacity>
+            </View>
+          ))}
+      </View>
+      
+      {/* Risk Assessment */}
+      {risk_assessment.factors.length > 0 && (
+        <View style={styles.riskContainer}>
+          <Text style={styles.sectionTitle}>Risk Assessment</Text>
+          {risk_assessment.factors.map((factor, index) => (
+            <View key={index} style={styles.riskItem}>
+              <Icon 
+                name={factor.severity === 'high' ? 'priority-high' : 'info'} 
+                size={20} 
+                color={factor.severity === 'high' ? '#E53935' : '#FFC107'} 
+              />
+              <Text style={styles.riskText}>{factor.reason}</Text>
+            </View>
+          ))}
+        </View>
+      )}
+      
+      {/* Action Buttons */}
+      <View style={styles.actionContainer}>
+        <TouchableOpacity 
+          style={[styles.button, styles.primaryButton]}
+          onPress={onEnhanceClaim}
+        >
+          <Text style={styles.primaryButtonText}>Enhance Claim</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={[styles.button, styles.secondaryButton]}
+          onPress={onSubmitAnyway}
+        >
+          <Text style={styles.secondaryButtonText}>Submit Anyway</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+```
+
+## Visual Checklist Elements
+
+The visual checklist provides clear indicators of what's completed and what needs attention. It uses color coding and iconography to prioritize actions.
+
+### Design Implementation - Styles for Checklist
+
+```jsx
+const styles = StyleSheet.create({
+  container: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 16,
+    marginVertical: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: '700',
+    marginBottom: 16,
+    color: '#333333',
+  },
+  confidenceMeter: {
+    marginBottom: 16,
+  },
+  confidenceLabel: {
+    fontSize: 14,
+    marginBottom: 4,
+    color: '#666666',
+  },
+  confidenceValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'right',
+    marginTop: 4,
+    color: '#333333',
+  },
+  diagnosisContainer: {
+    marginBottom: 16,
+    padding: 12,
+    backgroundColor: '#F5F7FA',
+    borderRadius: 8,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+    color: '#333333',
+  },
+  diagnosisText: {
+    fontSize: 15,
+    fontWeight: '500',
+    marginBottom: 4,
+    color: '#333333',
+  },
+  diagnosisDetails: {
+    fontSize: 14,
+    color: '#666666',
+  },
+  checklistContainer: {
+    marginBottom: 16,
+  },
+  checklistItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#EEEEEE',
+  },
+  checklistContent: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  checklistText: {
+    fontSize: 15,
+    color: '#333333',
+  },
+  recommendationText: {
+    fontSize: 13,
+    color: '#666666',
+    marginTop: 2,
+  },
+  actionButton: {
+    backgroundColor: '#E1F5FE',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
+  },
+  actionButtonText: {
+    fontSize: 13,
+    color: '#0288D1',
+    fontWeight: '500',
+  },
+  riskContainer: {
+    marginBottom: 16,
+    padding: 12,
+    backgroundColor: '#FFF8E1',
+    borderRadius: 8,
+  },
+  riskItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  riskText: {
+    marginLeft: 8,
+    fontSize: 14,
+    color: '#333333',
+    flex: 1,
+  },
+  actionContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+  },
+  button: {
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryButton: {
+    backgroundColor: '#2196F3',
+    flex: 1,
+    marginRight: 8,
+  },
+  primaryButtonText: {
+    color: 'white',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+  secondaryButton: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: '#BBBBBB',
+    flex: 1,
+    marginLeft: 8,
+  },
+  secondaryButtonText: {
+    color: '#666666',
+    fontWeight: '600',
+    fontSize: 15,
+  },
+});
+```
+
+## Integration with Claim Submission Flow
+
+The Blueprint Preview will be integrated into the claim submission flow at a strategic point - when the user has entered initial information but before final submission.
+
+```jsx
+// Integration into claim submission flow
+const ClaimSubmissionScreen = () => {
+  const [claimData, setClaimData] = useState({
+    equipment: null,
+    description: '',
+    attachments: [],
+  });
+  const [blueprintData, setBlueprintData] = useState(null);
+  const [showBlueprint, setShowBlueprint] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // Function to check if enough data is present to generate blueprint
+  const canGenerateBlueprint = () => {
+    return (
+      claimData.equipment && 
+      claimData.description.length > 10 && 
+      claimData.attachments.length > 0
+    );
+  };
+  
+  // Fetch blueprint when sufficient data is available
+  useEffect(() => {
+    if (canGenerateBlueprint() && !blueprintData && !showBlueprint) {
+      fetchBlueprint();
+    }
+  }, [claimData]);
+  
+  // Fetch blueprint from API
+  const fetchBlueprint = async () => {
+    try {
+      setIsSubmitting(true);
+      const response = await api.post('/api/agent/blueprint', {
+        claim_id: claimData.id || 'draft',
+        equipment: claimData.equipment,
+        description: claimData.description,
+        attachments: claimData.attachments,
+        draft_metadata: {
+          created_at: new Date().toISOString(),
+          last_modified: new Date().toISOString(),
+          completion_percentage: calculateCompletionPercentage(claimData)
+        }
+      });
+      
+      if (response.data.success) {
+        setBlueprintData(response.data);
+        setShowBlueprint(true);
+      }
+    } catch (error) {
+      console.error('Error fetching blueprint:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+  
+  // Calculate completion percentage based on available data
+  const calculateCompletionPercentage = (data) => {
+    let score = 0;
+    const weights = {
+      equipment: 20,
+      description: 30,
+      attachments: 50
+    };
+    
+    if (data.equipment) score += weights.equipment;
+    if (data.description.length > 10) score += weights.description;
+    if (data.attachments.length > 0) {
+      score += (data.attachments.length / 3) * weights.attachments;
+      if (score > 100) score = 100;
+    }
+    
+    return Math.round(score);
+  };
+  
+  // Handle enhancing a claim based on blueprint recommendations
+  const handleEnhanceClaim = (itemId, recommendation) => {
+    setShowBlueprint(false);
+    
+    // Scroll to relevant section based on itemId
+    if (itemId === 'additional_photos') {
+      // Scroll to photo upload section
+    } else if (itemId === 'logs') {
+      // Open log upload dialog
+    } else if (itemId === 'usage_data') {
+      // Scroll to usage data fields
+    }
+    
+    // Show guidance toast with recommendation
+    Toast.show({
+      type: 'info',
+      text1: 'Enhancement Needed',
+      text2: recommendation,
+      position: 'top',
+      visibilityTime: 4000,
+    });
+  };
+  
+  // Handle submitting claim despite blueprint recommendations
+  const handleSubmitAnyway = () => {
+    Alert.alert(
+      'Submit Without Enhancements?',
+      'Your claim may face delays or rejection without the recommended improvements. Do you want to submit anyway?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel'
+        },
+        {
+          text: 'Submit Anyway',
+          style: 'destructive',
+          onPress: () => submitClaim(claimData)
+        }
+      ]
+    );
+  };
+  
+  // Submit the final claim
+  const submitClaim = async (data) => {
+    try {
+      setIsSubmitting(true);
+      
+      // If we have blueprint data, use the recommended title
+      if (blueprintData) {
+        data.title = blueprintData.recommended_title;
+      }
+      
+      const response = await api.post('/api/claims', data);
+      
+      if (response.data.success) {
+        navigation.navigate('ClaimSubmitted', {
+          claimId: response.data.claim_id
+        });
+      }
+    } catch (error) {
+      console.error('Error submitting claim:', error);
+      Alert.alert('Submission Error', 'Failed to submit claim. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+  
+  return (
+    <SafeAreaView style={styles.container}>
+      <ScrollView>
+        {/* Equipment Selection */}
+        <EquipmentSelector
+          selectedEquipment={claimData.equipment}
+          onSelect={(equipment) => setClaimData({...claimData, equipment})}
+        />
+        
+        {/* Issue Description */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Describe the issue</Text>
+          <TextInput
+            style={styles.descriptionInput}
+            multiline
+            placeholder="Describe the problem in detail..."
+            value={claimData.description}
+            onChangeText={(text) => setClaimData({...claimData, description: text})}
+          />
+        </View>
+        
+        {/* Photo/Attachment Upload */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Add Photos & Documentation</Text>
+          <AttachmentUploader
+            attachments={claimData.attachments}
+            onAttachmentsChange={(attachments) => setClaimData({...claimData, attachments})}
+          />
+        </View>
+        
+        {/* Additional Fields Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Additional Information</Text>
+          {/* Dynamic fields based on equipment type */}
+          {claimData.equipment?.category === 'Projector' && (
+            <>
+              <Text style={styles.fieldLabel}>Hours of Use</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. 1200"
+                keyboardType="number-pad"
+                onChangeText={(text) => setClaimData({
+                  ...claimData, 
+                  additional_fields: {
+                    ...claimData.additional_fields,
+                    hours_of_use: text
+                  }
+                })}
+              />
+              
+              <Text style={styles.fieldLabel}>Firmware Version</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="e.g. v1.2.3"
+                onChangeText={(text) => setClaimData({
+                  ...claimData, 
+                  additional_fields: {
+                    ...claimData.additional_fields,
+                    firmware_version: text
+                  }
+                })}
+              />
+            </>
+          )}
+        </View>
+        
+        {/* Blueprint Preview Section */}
+        {showBlueprint && blueprintData && (
+          <BlueprintPreview
+            blueprint={blueprintData}
+            onEnhanceClaim={handleEnhanceClaim}
+            onSubmitAnyway={handleSubmitAnyway}
+          />
+        )}
+        
+        {/* Submit Button (only shown if blueprint is not visible

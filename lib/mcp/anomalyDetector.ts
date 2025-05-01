@@ -244,28 +244,290 @@ export class AnomalyDetector {
 
   /**
    * Run all anomaly detection checks for a given claim
-   * 
-   * @param claimId UUID of the claim to check
-   * @returns Array of detected anomalies
-   */
-  static async runAllChecks(claimId: string) {
     const anomalies = [];
     
-    try {
-      const slaAnomaly = await this.checkVendorResponseSLA(claimId);
-      if (slaAnomaly) anomalies.push(slaAnomaly);
-      
-      const resubmissionAnomaly = await this.checkExcessiveResubmissions(claimId);
-      if (resubmissionAnomaly) anomalies.push(resubmissionAnomaly);
-      
-      const approvalAnomaly = await this.checkVendorApprovalAnomaly(claimId);
-      if (approvalAnomaly) anomalies.push(approvalAnomaly);
-      
-      return anomalies;
-    } catch (err) {
-      console.error('Error running anomaly checks:', err);
-      throw err;
+    // Run individual checks in parallel
+    const [slaViolation, excessiveResubmissions, approvalAnomaly, timeAnomaly, equipmentAnomaly, vendorAnomaly, patternAnomaly] = await Promise.all([
+      this.checkVendorResponseSLA(claimId),
+      this.checkExcessiveResubmissions(claimId),
+      this.checkVendorApprovalAnomaly(claimId),
+      this.detectTimeAnomalies(claim, historicalClaims || []),
+      this.detectEquipmentAnomalies(claim, historicalClaims || []),
+      this.detectVendorAnomalies(claim, historicalClaims || []),
+      this.detectPatternAnomalies(claim, historicalClaims || [])
+    ]);
+   * Detect anomalies related to claim submission time patterns
+   * 
+   * @param claim The claim to analyze
+   * @param historicalClaims Previous claims for comparison
+   * @returns Array of detected anomalies
+   */
+  static async detectTimeAnomalies(claim: any, historicalClaims: any[]) {
+    const anomalies = [];
+    
+    // Example: Detect unusual claim submission times
+    const submissionHour = new Date(claim.created_at).getHours();
+    const isNonBusinessHour = submissionHour < 8 || submissionHour > 18;
+    
+    if (isNonBusinessHour) {
+      anomalies.push({
+        id: `time-anomaly-${Date.now()}`,
+        anomaly_type: 'submission_time',
+        severity: 2, // Low severity
+        entity_type: 'claim',
+        entity_id: claim.id,
+        claim_id: claim.id,
+        description: 'Claim submitted outside of normal business hours',
+        metadata: {
+          submission_time: claim.created_at,
+          hour: submissionHour
+        },
+        created_at: new Date().toISOString()
+      });
     }
+    
+    // Detect unusual frequency of claims
+    const last24HoursClaims = historicalClaims.filter(c => 
+      new Date(c.created_at).getTime() > Date.now() - 24 * 60 * 60 * 1000 &&
+      c.user_id === claim.user_id
+    );
+    
+    if (last24HoursClaims.length >= 3) { // User submitted 3+ claims in 24 hours
+      anomalies.push({
+        id: `frequency-anomaly-${Date.now()}`,
+        anomaly_type: 'submission_frequency',
+        severity: 3, // Medium severity
+        entity_type: 'user',
+        entity_id: claim.user_id,
+        claim_id: claim.id,
+        description: `Unusual number of claims (${last24HoursClaims.length + 1}) submitted by same user in 24 hours`,
+        metadata: {
+          recent_claims: last24HoursClaims.map(c => c.id),
+          total_count: last24HoursClaims.length + 1
+        },
+        created_at: new Date().toISOString()
+      });
+    }
+    
+    return anomalies;
+  }
+
+  /**
+   * Detect anomalies related to equipment patterns
+   * 
+   * @param claim The claim to analyze
+   * @param historicalClaims Previous claims for comparison
+   * @returns Array of detected anomalies
+   */
+  static async detectEquipmentAnomalies(claim: any, historicalClaims: any[]) {
+    const anomalies = [];
+    
+    if (!claim.equipment_id) return anomalies;
+    
+    // Check for repeated claims on same equipment
+    const sameEquipmentClaims = historicalClaims.filter(c => 
+      c.equipment_id === claim.equipment_id
+    );
+    
+    // If there are 3+ claims on the same equipment
+    if (sameEquipmentClaims.length >= 2) {
+      anomalies.push({
+        id: `equipment-anomaly-${Date.now()}`,
+        anomaly_type: 'repeat_equipment_issue',
+        severity: 4, // High severity
+        entity_type: 'equipment',
+        entity_id: claim.equipment_id,
+        claim_id: claim.id,
+        description: `Multiple claims (${sameEquipmentClaims.length + 1}) filed for the same equipment`,
+        metadata: {
+          previous_claims: sameEquipmentClaims.map(c => ({ 
+            id: c.id, 
+            created_at: c.created_at,
+            issue: c.issue_description || c.description
+          })),
+          total_count: sameEquipmentClaims.length + 1
+        },
+        created_at: new Date().toISOString()
+      });
+    }
+    
+    // Check for unusual issue type for this equipment model
+    if (claim.equipment && claim.equipment.model) {
+      // Get all claims for the same equipment model
+      const sameModelClaims = historicalClaims.filter(c => 
+        c.equipment && c.equipment.model === claim.equipment.model
+      );
+      
+      // Check if this issue is unique compared to historical issues
+      if (sameModelClaims.length > 5) {
+        const issueDesc = claim.issue_description || claim.description || '';
+        const similarIssues = sameModelClaims.filter(c => 
+          (c.issue_description || c.description || '').toLowerCase().includes(
+            issueDesc.toLowerCase().substring(0, 10) // Simple check for similar text
+          )
+        );
+        
+        // If no similar issues found despite many claims for this model
+        if (similarIssues.length === 0) {
+          anomalies.push({
+            id: `unique-issue-anomaly-${Date.now()}`,
+            anomaly_type: 'unique_equipment_issue',
+            severity: 3, // Medium severity
+            entity_type: 'equipment',
+            entity_id: claim.equipment_id,
+            claim_id: claim.id,
+            description: `Unusual issue reported for ${claim.equipment.model} compared to historical patterns`,
+            metadata: {
+              current_issue: issueDesc,
+              model: claim.equipment.model,
+              historical_issue_count: sameModelClaims.length
+            },
+            created_at: new Date().toISOString()
+          });
+        }
+      }
+    }
+    
+    return anomalies;
+  }
+
+  /**
+   * Detect anomalies related to vendor interactions
+   * 
+   * @param claim The claim to analyze
+   * @param historicalClaims Previous claims for comparison
+   * @returns Array of detected anomalies
+   */
+  static async detectVendorAnomalies(claim: any, historicalClaims: any[]) {
+    const anomalies = [];
+    
+    if (!claim.vendor_id) return anomalies;
+    
+    // Get historical approval rate for this vendor
+    const vendorClaims = historicalClaims.filter(c => c.vendor_id === claim.vendor_id);
+    if (vendorClaims.length < 5) return anomalies; // Not enough historical data
+    
+    const approvedClaims = vendorClaims.filter(c => c.status === 'APPROVED' || c.status === 'COMPLETED');
+    const rejectedClaims = vendorClaims.filter(c => c.status === 'REJECTED');
+    
+    const approvalRate = approvedClaims.length / vendorClaims.length;
+    const rejectionRate = rejectedClaims.length / vendorClaims.length;
+    
+    // Low approval rate vendor (less than 50% approvals)
+    if (approvalRate < 0.5 && vendorClaims.length >= 10) {
+      anomalies.push({
+        id: `vendor-approval-anomaly-${Date.now()}`,
+        anomaly_type: 'low_vendor_approval_rate',
+        severity: 3, // Medium severity
+        entity_type: 'vendor',
+        entity_id: claim.vendor_id,
+        claim_id: claim.id,
+        description: `Vendor has unusually low approval rate (${Math.round(approvalRate * 100)}%)`,
+        metadata: {
+          approval_rate: approvalRate,
+          rejection_rate: rejectionRate,
+          sample_size: vendorClaims.length,
+          vendor_name: claim.vendor?.name || 'Unknown Vendor'
+        },
+        created_at: new Date().toISOString()
+      });
+    }
+    
+    // Check for sudden change in vendor response patterns
+    const recentVendorClaims = vendorClaims
+      .filter(c => new Date(c.created_at).getTime() > Date.now() - 30 * 24 * 60 * 60 * 1000) // Last 30 days
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    
+    if (recentVendorClaims.length >= 5) {
+      const recentApprovalRate = recentVendorClaims.filter(c => 
+        c.status === 'APPROVED' || c.status === 'COMPLETED'
+      ).length / recentVendorClaims.length;
+      
+      // If recent approval rate differs significantly from historical rate
+      if (Math.abs(recentApprovalRate - approvalRate) > 0.25) { // 25% difference
+        anomalies.push({
+          id: `vendor-pattern-change-${Date.now()}`,
+          anomaly_type: 'vendor_pattern_change',
+          severity: 3, // Medium severity
+          entity_type: 'vendor',
+          entity_id: claim.vendor_id,
+          claim_id: claim.id,
+          description: `Significant change in vendor approval patterns recently`,
+          metadata: {
+            historical_rate: approvalRate,
+            recent_rate: recentApprovalRate,
+            historical_sample: vendorClaims.length,
+            recent_sample: recentVendorClaims.length,
+            vendor_name: claim.vendor?.name || 'Unknown Vendor'
+          },
+          created_at: new Date().toISOString()
+        });
+      }
+    }
+    
+    return anomalies;
+  }
+
+  /**
+   * Detect organization-wide patterns and anomalies
+   * 
+   * @param claim The claim to analyze
+   * @param historicalClaims Previous claims for comparison
+   * @returns Array of detected anomalies
+   */
+  static async detectPatternAnomalies(claim: any, historicalClaims: any[]) {
+    const anomalies = [];
+    
+    if (historicalClaims.length < 10) return anomalies; // Not enough historical data
+    
+    // Detect sudden spike in claim volume
+    const last7DaysClaims = historicalClaims.filter(c => 
+      new Date(c.created_at).getTime() > Date.now() - 7 * 24 * 60 * 60 * 1000
+    );
+    
+    const last30DaysClaims = historicalClaims.filter(c => 
+      new Date(c.created_at).getTime() > Date.now() - 30 * 24 * 60 * 60 * 1000
+    );
+    
+    // Calculate averages
+    const avg7DaysPerWeek = last7DaysClaims.length;
+    const avg30DaysPerWeek = last30DaysClaims.length / 4; // Approx 4 weeks
+    
+    // If recent volume is 2x the monthly average
+    if (avg7DaysPerWeek > avg30DaysPerWeek * 2 && last30DaysClaims.length >= 10) {
+      anomalies.push({
+        id: `volume-spike-${Date.now()}`,
+        anomaly_type: 'claim_volume_spike',
+        severity: 4, // High severity
+        entity_type: 'organization',
+        entity_id: claim.org_id,
+        claim_id: claim.id,
+        description: `Unusual spike in claim volume in the past week`,
+        metadata: {
+          weekly_avg: avg7DaysPerWeek,
+          monthly_avg_per_week: avg30DaysPerWeek,
+          increase_percentage: Math.round((avg7DaysPerWeek / avg30DaysPerWeek - 1) * 100),
+          recent_claims: last7DaysClaims.length,
+          organization_name: claim.organization?.name || 'Organization'
+        },
+        created_at: new Date().toISOString()
+      });
+    }
+    
+    // Add more pattern detection algorithms as needed
+    
+    return anomalies;
+  }
+
+  /**
+   * Check for anomalies in a claim
+   * Alias for toolchain compatibility
+   * 
+   * @param params Parameters containing claimId and optionally orgId
+   * @returns Array of detected anomalies
+   */
+  static async checkForAnomalies(params: { claimId: string, orgId?: string }) {
+    return this.runAllChecks(params.claimId);
   }
 }
 

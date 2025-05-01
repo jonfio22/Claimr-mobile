@@ -1,4 +1,5 @@
 // Core MCP7 types
+export * from './contextTypes';
 
 export type EntityType = 'claim' | 'message' | 'equipment' | 'vendor' | 'user' | 'photo';
 
